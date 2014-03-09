@@ -2,9 +2,11 @@ import sys
 import numpy as np
 import timeit
 import math
-from numbapro import cuda
-from numbapro.cudalib import curand
+from numbapro import cuda, float64
+from numbapro.cudalib import curand, cublas
 
+
+blas = cublas.Blas()
 
 cached_input_file = "input.npy"
 
@@ -78,6 +80,19 @@ def norm_random_nums(C, d):
         c[j] /= val
 
 
+@cuda.jit("void(float64[:,:], float64[:,:], float64[:, :])")
+def batch_matmul(Vd, C, A):
+    sampleIdx = cuda.blockIdx.x
+    tid = cuda.threadIdx.x
+
+    sum = 0.0
+    # Assume C.shape[0] is usually small
+    for k in range(C.shape[0]):
+        sum += Vd[tid, k] * C[k, sampleIdx]
+
+    A[tid, sampleIdx] = sum
+
+
 def calc_ncta1d(size, blksz):
     return size + (blksz - 1) // blksz
 
@@ -95,16 +110,28 @@ def spca(A, epsilon=0.1, d=3, k=10):
     opt_x = np.zeros((p, 1))
     opt_v = -np.inf
 
+    # Send Vd to GPU
+    dVd = cuda.to_device(Vd)
+
     #GENERATE ALL RANDOM SAMPLES BEFORE
     # Also do normalization on the device
     dC = curand.normal(mean=0, sigma=1, size=(d * numSamples),
                        device=True).reshape(d, numSamples)
     norm_random_nums[calc_ncta1d(dC.shape[1], 512), 512](dC, d)
-    C = dC.copy_to_host()
+    #C = dC.copy_to_host()
 
-    for i in np.arange(1, numSamples + 1):
-        c = C[:, i - 1:i]
-        a = Vd.dot(c)
+    # Compute Vd * c for all samples
+    dA = cuda.device_array(shape=(Vd.shape[0], numSamples))
+    # XXX: Vd.shape[0] must be within compute capability requirement
+    # Note: this kernel can be easily scaled due to the use of num of samples
+    #       as the ncta
+    batch_matmul[numSamples, Vd.shape[0]](dVd, dC, dA)
+    A = dA.copy_to_host()
+
+    for i in xrange(1, numSamples + 1):
+        # c = C[:, i - 1:i]
+        # a = Vd.dot(c)
+        a = A[:, i - 1:i]
 
         #partial argsort in numpy?
         #if partial, kth largest is p-k th smallest
