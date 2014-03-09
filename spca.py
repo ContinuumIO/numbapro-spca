@@ -1,6 +1,10 @@
 import sys
 import numpy as np
 import timeit
+import math
+from numbapro import cuda
+from numbapro.cudalib import curand
+
 
 cached_input_file = "input.npy"
 
@@ -58,6 +62,26 @@ def spca_unopt(A, epsilon=0.1, d=3, k=10):
     return Vd, opt_x
 
 
+@cuda.jit("void(float64[:,:], int32)")
+def norm_random_nums(C, d):
+    i = cuda.grid(1)
+    if i >= C.shape[1]:
+        return
+
+    c = C[:, i]
+    sum = 0.0
+    for j in range(d):
+        cj = c[j]
+        sum += cj * cj
+    val = math.sqrt(sum)
+    for j in range(d):
+        c[j] /= val
+
+
+def calc_ncta1d(size, blksz):
+    return size + (blksz - 1) // blksz
+
+
 def spca(A, epsilon=0.1, d=3, k=10):
     p = A.shape[0]
 
@@ -65,19 +89,21 @@ def spca(A, epsilon=0.1, d=3, k=10):
 
     #Vd = U[:,1:d+1].dot(np.diag(np.sqrt(S[1:d+1])))
     Vd = U[:, 0:d].dot(np.diag(np.sqrt(S[0:d])))
-    numSamples = (4. / epsilon) ** d
+    numSamples = int((4. / epsilon) ** d)
 
     ##actual algorithm
     opt_x = np.zeros((p, 1))
     opt_v = -np.inf
 
     #GENERATE ALL RANDOM SAMPLES BEFORE
-    C = np.random.randn(d, numSamples)
+    # Also do normalization on the device
+    dC = curand.normal(mean=0, sigma=1, size=(d * numSamples),
+                       device=True).reshape(d, numSamples)
+    norm_random_nums[calc_ncta1d(dC.shape[1], 512), 512](dC, d)
+    C = dC.copy_to_host()
 
     for i in np.arange(1, numSamples + 1):
         c = C[:, i - 1:i]
-        c_norm = np.linalg.norm(c)
-        c = c / c_norm
         a = Vd.dot(c)
 
         #partial argsort in numpy?
@@ -91,7 +117,7 @@ def spca(A, epsilon=0.1, d=3, k=10):
         if val > opt_v:
             opt_v = val
             opt_x.fill(0)
-            opt_x[Ik] = aIk / val
+            opt_x[Ik] = (aIk / val)
 
     return Vd, opt_x
 
