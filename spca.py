@@ -229,6 +229,7 @@ def gpu_slice(arr, col):
     return host
 
 
+
 def spca(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     initNumSamples = int((4. / epsilon) ** d)
@@ -243,6 +244,10 @@ def spca(Vd, epsilon=0.1, d=3, k=10):
     dVd = cuda.to_device(Vd)
 
     remaining = initNumSamples
+
+    custr = cuda.stream()
+    prng = curand.PRNG(stream=custr)
+
     while remaining:
         numSamples = min(remaining, maxSize)
         remaining -= numSamples
@@ -251,28 +256,32 @@ def spca(Vd, epsilon=0.1, d=3, k=10):
         dA = cuda.device_array(shape=(Vd.shape[0], numSamples), order='F')
         dI = cuda.device_array(shape=(k, numSamples), dtype=np.int16, order='F')
         daInorm = cuda.device_array(shape=numSamples, dtype=np.float64)
+        dC = cuda.device_array(shape=(d, numSamples), order='F')
 
         #GENERATE ALL RANDOM SAMPLES BEFORE
         # Also do normalization on the device
-        dC = curand.normal(mean=0, sigma=1, size=(d * numSamples),
-                           device=True).reshape(d, numSamples, order='F')
-        norm_random_nums[calc_ncta1d(dC.shape[1], 512), 512](dC, d)
+        prng.normal(dC.reshape(dC.size), mean=0, sigma=1)
+
+        norm_random_nums[calc_ncta1d(dC.shape[1], 512), 512, custr](dC, d)
         #C = dC.copy_to_host()
 
         # Replaces: a = Vd.dot(c)
         # XXX: Vd.shape[0] must be within compute capability requirement
         # Note: this kernel can be easily scaled due to the use of num of samples
         #       as the ncta
-        batch_matmul[numSamples, Vd.shape[0]](dVd, dC, dA)
+        batch_matmul[numSamples, Vd.shape[0], custr](dVd, dC, dA)
 
         # Replaces: I = np.argsort(a, axis=0)
         # Note: the k-selection is dominanting the time
-        batch_k_selection[numSamples, Vd.shape[0]](dA, dI, k)
+        batch_k_selection[numSamples, Vd.shape[0], custr](dA, dI, k)
 
         # Replaces: val = np.linalg.norm(a[I[-k:]])
-        batch_scatter_norm[calc_ncta1d(numSamples, 512), 512](dA, dI, daInorm)
+        batch_scatter_norm[calc_ncta1d(numSamples, 512), 512, custr](dA, dI,
+                                                                     daInorm)
 
-        aInorm = daInorm.copy_to_host()
+        aInorm = daInorm.copy_to_host(stream=custr)
+
+        custr.synchronize()
 
         for i in xrange(numSamples):
             val = aInorm[i]
