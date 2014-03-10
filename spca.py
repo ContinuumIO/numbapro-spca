@@ -108,7 +108,7 @@ def swapi(ary, a, b):
 
 
 @cuda.jit("void(float64[:,:], int16[:,:], int16)")
-def batch_k_biggest_retry(A, I, k):
+def batch_k_selection(A, I, k):
     """QuickSelect
     """
     sampleIdx = cuda.blockIdx.x
@@ -259,7 +259,7 @@ def spca(A, epsilon=0.1, d=3, k=10):
 
     # Replaces: I = np.argsort(a, axis=0)
     # Note: the k-selection is dominanting the time
-    batch_k_biggest_retry[numSamples, Vd.shape[0]](dA, dI, k)
+    batch_k_selection[numSamples, Vd.shape[0]](dA, dI, k)
 
     # Replaces: val = np.linalg.norm(a[I[-k:]])
     batch_scatter_norm[calc_ncta1d(numSamples, 512), 512](dA, dI, daInorm)
@@ -335,7 +335,7 @@ def test_sorter():
     print(A)
 
     expect = sorted(A.flatten().tolist())[-k:]
-    batch_k_biggest_retry[1, n](A, I, k)
+    batch_k_selection[1, n](A, I, k)
 
     print(I)
     print(A[I])
