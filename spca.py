@@ -118,6 +118,7 @@ def batch_k_selection(A, I, k):
     values = cuda.shared.array(shape=1000, dtype=float64)
     indices = cuda.shared.array(shape=1000, dtype=int16)
     storeidx = cuda.shared.array(shape=1, dtype=int32)
+    rightidx = cuda.shared.array(shape=1, dtype=int32)
 
     # Prefill cache
     values[tid] = A[tid, sampleIdx]
@@ -125,6 +126,7 @@ def batch_k_selection(A, I, k):
     cuda.syncthreads()
 
     st = 0
+    rst = 0
     n = A.shape[0]
     left = 0
     right = n - 1
@@ -133,9 +135,13 @@ def batch_k_selection(A, I, k):
     while left < right:
     # for _ in range(1):
         st = -1
+        rst = -1
+
         pivot = right #(right + left + 1) // 2
 
         storeidx[0] = left
+        rightidx[0] = 0
+
         pval = values[pivot]
 
         # Move pivot to the end
@@ -154,13 +160,15 @@ def batch_k_selection(A, I, k):
             ind = indices[tid]
             if val < pval:
                 st = cuda.atomic.add(storeidx, 0, 1)
+            else:
+                rst = cuda.atomic.add(rightidx, 0, 1)
 
         cuda.syncthreads()
         finalpivot = storeidx[0]
 
-        if tid >= left and tid < right and st == -1:
+        if rst != -1:
             # Assign right partition index
-            st = cuda.atomic.add(storeidx, 0, 1)
+            st = finalpivot + rst
 
         # Swap
         if st != -1 and st != tid:
