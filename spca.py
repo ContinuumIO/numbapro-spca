@@ -1,3 +1,4 @@
+from __future__ import print_function, division
 import sys
 import numpy as np
 import timeit
@@ -132,7 +133,7 @@ def batch_k_selection(A, I, k):
         st = -1
         rst = -1
 
-        pivot = right #(right + left + 1) // 2
+        pivot = right  #(right + left + 1) // 2
 
         storeidx[0] = left
         rightidx[0] = 0
@@ -332,7 +333,6 @@ def benchmarkLarge():
 
     for dit in range(2, dmax + 1):
         Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
-        print Vd.shape[0]
         for kit in range(10, kmax + 1, 10):
             #eventually another loop for iterations
             #print(min(timeit.repeat(lambda: spca(Vd, d=dit, k=kit), repeat=3, number=1)))
@@ -347,8 +347,8 @@ def benchmarkLarge():
             Gopt = outGPU.T.dot(A.dot(outGPU))
             Copt = outCPU.T.dot(A.dot(outCPU))
 
-            print(
-            "%d, %d, %f, %f, %f, %f" % (dit, kit, t2 - t1, t3 - t2, Gopt, Copt))
+            print("%d, %d, %f, %f, %f, %f" %
+                  (dit, kit, t2 - t1, t3 - t2, Gopt, Copt))
 
 
 def main():
