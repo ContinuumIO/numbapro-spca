@@ -298,28 +298,28 @@ def generate_input_file():
 
 
 def check_result():
-    dit = 4
+    dit = 3
     kit = 10
     A = np.load(cached_input_file)
     U, S, _ = np.linalg.svd(A)
     Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
-    opt_x = spca(A, d=dit, k=kit)
+    cpu_opt_x = spca_unopt(Vd, d=dit, k=kit)
+    gpu_opt_x = spca(Vd, d=dit, k=kit)
 
-    Gopt = opt_x.T.dot(A.dot(opt_x))
-    print(Gopt)
-    # r0 = np.linalg.norm(np.conjugate(Vd.T).dot(opt_x))
-    # r1 = np.conjugate(opt_x.T).dot(A.dot(opt_x))
-    #
-    # # Depend on input file
-    # # xr0 = 1.11100453416
-    # # xr1 = [[1.27317481]]
-    # print(r0, xr0)
-    # print(r1, xr1)
+    Gopt = gpu_opt_x.T.dot(A.dot(gpu_opt_x))
+    Copt = cpu_opt_x.T.dot(A.dot(cpu_opt_x))
+    print("These should be close:", Copt, Gopt)
 
 
 def benchmark():
+    dit = 3
+    kit = 10
     A = np.load(cached_input_file)
-    print(min(timeit.repeat(lambda: spca(A), repeat=3, number=1)))
+    U, S, _ = np.linalg.svd(A)
+    Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
+
+    print(min(timeit.repeat(lambda: spca(Vd, d=dit, k=kit), repeat=3,
+                            number=1)))
     # Best CPU time 7.05 seconds
 
 
