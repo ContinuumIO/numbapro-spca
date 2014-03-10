@@ -219,6 +219,7 @@ def gpu_slice(arr, col):
     Missing feature in NumbaPro
     """
     from numbapro.cudadrv.driver import device_to_host, DeviceView
+
     strides = arr.strides
     s = col * strides[1]
     e = (col + 1) * strides[1]
@@ -229,7 +230,6 @@ def gpu_slice(arr, col):
 
 
 def spca(A, epsilon=0.1, d=3, k=10):
-    
     Vd = A
     p = Vd.shape[0]
     numSamples = int((4. / epsilon) ** d)
@@ -306,6 +306,7 @@ def benchmark():
     print(min(timeit.repeat(lambda: spca(A), repeat=3, number=1)))
     # Best CPU time 7.05 seconds
 
+
 def benchmarkLarge():
     A = np.load(cached_input_file)
     dmax = 5
@@ -313,34 +314,33 @@ def benchmarkLarge():
     #SVD ONLY HERE
     p = A.shape[0]
     U, S, _ = np.linalg.svd(A)
-    
-    for dit in range(2,dmax+1):
-    	Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
-	print Vd.shape[0]
-        for kit in range(10,kmax+1,10):
+
+    for dit in range(2, dmax + 1):
+        Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
+        print Vd.shape[0]
+        for kit in range(10, kmax + 1, 10):
             #eventually another loop for iterations
             #print(min(timeit.repeat(lambda: spca(Vd, d=dit, k=kit), repeat=3, number=1)))
             #print(min(timeit.repeat(lambda: spca_unopt(Vd, d=dit, k=kit), repeat=3, number=1)))
-	    
+
             t1 = timeit.default_timer()
             outGPU = spca(Vd, d=dit, k=kit)
             t2 = timeit.default_timer()
             outCPU = spca_unopt(Vd, d=dit, k=kit)
-	    t3 = timeit.default_timer()
+            t3 = timeit.default_timer()
 
-            
-	    Gopt = outGPU.T.dot(A.dot(outGPU))
-	    Copt = outCPU.T.dot(A.dot(outCPU))
+            Gopt = outGPU.T.dot(A.dot(outGPU))
+            Copt = outCPU.T.dot(A.dot(outCPU))
 
-	    print("%d, %d, %f, %f, %f, %f" % (dit, kit, t2-t1, t3-t2, Gopt, Copt))
-
+            print(
+            "%d, %d, %f, %f, %f, %f" % (dit, kit, t2 - t1, t3 - t2, Gopt, Copt))
 
 
 def main():
     if '--gen' in sys.argv:
         generate_input_file()
     elif '--benchL' in sys.argv:
-	benchmarkLarge()
+        benchmarkLarge()
     elif '--bench' in sys.argv:
         benchmark()
     else:
