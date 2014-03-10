@@ -91,7 +91,7 @@ def batch_matmul(Vd, C, A):
         sum += Vd[tid, k] * C[k, sampleIdx]
 
     A[tid, sampleIdx] = sum
-    
+
 
 @cuda.jit("void(float64[::1], int32, int32)", device=True)
 def swapf(ary, a, b):
@@ -159,6 +159,7 @@ def batch_k_biggest_retry(A, I, k):
         finalpivot = storeidx[0]
 
         if tid >= left and tid < right and st == -1:
+            # Assign right partition index
             st = cuda.atomic.add(storeidx, 0, 1)
 
         # Swap
@@ -186,7 +187,23 @@ def batch_k_biggest_retry(A, I, k):
 
     if tid < k:
         I[tid, sampleIdx] = indices[n - tid - 1]
-    # I[tid, sampleIdx] = indices[tid]
+        # I[tid, sampleIdx] = indices[tid]
+
+
+@cuda.jit("void(float64[:,:], int16[:,:], float64[:])")
+def batch_scatter_norm(A, I, aInorm):
+    tid = cuda.grid(1)
+
+    if tid >= I.shape[1]:
+        return
+
+    sum = 0.0
+    for k in range(I.shape[0]):
+        ind = I[k, tid]
+        val = A[ind, tid]
+        sum += val * val
+
+    aInorm[tid] = math.sqrt(sum)
 
 
 def calc_ncta1d(size, blksz):
@@ -211,6 +228,7 @@ def spca(A, epsilon=0.1, d=3, k=10):
     # Prepare storage for vector A
     dA = cuda.device_array(shape=(Vd.shape[0], numSamples), order='F')
     dI = cuda.device_array(shape=(k, numSamples), dtype=np.int16, order='F')
+    daInorm = cuda.device_array(shape=numSamples, dtype=np.float64)
 
     #GENERATE ALL RANDOM SAMPLES BEFORE
     # Also do normalization on the device
@@ -224,10 +242,15 @@ def spca(A, epsilon=0.1, d=3, k=10):
     # Note: this kernel can be easily scaled due to the use of num of samples
     #       as the ncta
     batch_matmul[numSamples, Vd.shape[0]](dVd, dC, dA)
+
+    # Note: the k-selection is dominanting the time
     batch_k_biggest_retry[numSamples, Vd.shape[0]](dA, dI, k)
+
+    batch_scatter_norm[calc_ncta1d(numSamples, 512), 512](dA, dI, daInorm)
 
     A = dA.copy_to_host()
     I = dI.copy_to_host()
+    aInorm = daInorm.copy_to_host()
 
     for i in xrange(1, numSamples + 1):
         a = A[:, i - 1:i]
@@ -237,16 +260,10 @@ def spca(A, epsilon=0.1, d=3, k=10):
         #but need indices more than partial
 
         Ik = I[:, i - 1:i]
-        # print(Ik)
-        # print(Ik.shape)
-
-        # I = np.argsort(a, axis=0)
-        # Ik = I[-k:]     #index backwards to get k largest
-        # print(Ik)
-        # return
 
         aIk = a[Ik]
-        val = np.linalg.norm(aIk)
+        # val = np.linalg.norm(aIk)
+        val = aInorm[i - 1]
 
         if val > opt_v:
             opt_v = val
