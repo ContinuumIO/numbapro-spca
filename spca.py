@@ -229,8 +229,7 @@ def gpu_slice(arr, col):
     return host
 
 
-def spca(A, epsilon=0.1, d=3, k=10):
-    Vd = A
+def spca(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     numSamples = int((4. / epsilon) ** d)
 
@@ -288,17 +287,23 @@ def generate_input_file():
 
 
 def check_result():
+    dit = 4
+    kit = 10
     A = np.load(cached_input_file)
-    Vd, opt_x = spca(A)
+    U, S, _ = np.linalg.svd(A)
+    Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
+    opt_x = spca(A, d=dit, k=kit)
 
-    r0 = np.linalg.norm(np.conjugate(Vd.T).dot(opt_x))
-    r1 = np.conjugate(opt_x.T).dot(A.dot(opt_x))
-
-    # Depend on input file
-    xr0 = 1.11100453416
-    xr1 = [[1.27317481]]
-    print(r0, xr0)
-    print(r1, xr1)
+    Gopt = opt_x.T.dot(A.dot(opt_x))
+    print(Gopt)
+    # r0 = np.linalg.norm(np.conjugate(Vd.T).dot(opt_x))
+    # r1 = np.conjugate(opt_x.T).dot(A.dot(opt_x))
+    #
+    # # Depend on input file
+    # # xr0 = 1.11100453416
+    # # xr1 = [[1.27317481]]
+    # print(r0, xr0)
+    # print(r1, xr1)
 
 
 def benchmark():
