@@ -210,6 +210,20 @@ def calc_ncta1d(size, blksz):
     return size + (blksz - 1) // blksz
 
 
+def gpu_slice(arr, col):
+    """
+    Missing feature in NumbaPro
+    """
+    from numbapro.cudadrv.driver import device_to_host, DeviceView
+    strides = arr.strides
+    s = col * strides[1]
+    e = (col + 1) * strides[1]
+    host = np.empty(shape=arr.shape[0], dtype=arr.dtype)
+    view = DeviceView(arr.gpu_data, s, e)
+    device_to_host(host, view, e - s)
+    return host
+
+
 def spca(A, epsilon=0.1, d=3, k=10):
     p = A.shape[0]
 
@@ -237,37 +251,31 @@ def spca(A, epsilon=0.1, d=3, k=10):
     norm_random_nums[calc_ncta1d(dC.shape[1], 512), 512](dC, d)
     #C = dC.copy_to_host()
 
-    # Compute Vd * c for all samples
+    # Replaces: a = Vd.dot(c)
     # XXX: Vd.shape[0] must be within compute capability requirement
     # Note: this kernel can be easily scaled due to the use of num of samples
     #       as the ncta
     batch_matmul[numSamples, Vd.shape[0]](dVd, dC, dA)
 
+    # Replaces: I = np.argsort(a, axis=0)
     # Note: the k-selection is dominanting the time
     batch_k_biggest_retry[numSamples, Vd.shape[0]](dA, dI, k)
 
+    # Replaces: val = np.linalg.norm(a[I[-k:]])
     batch_scatter_norm[calc_ncta1d(numSamples, 512), 512](dA, dI, daInorm)
 
-    A = dA.copy_to_host()
-    I = dI.copy_to_host()
     aInorm = daInorm.copy_to_host()
 
-    for i in xrange(1, numSamples + 1):
-        a = A[:, i - 1:i]
-
-        #partial argsort in numpy?
-        #if partial, kth largest is p-k th smallest
-        #but need indices more than partial
-
-        Ik = I[:, i - 1:i]
-
-        aIk = a[Ik]
-        # val = np.linalg.norm(aIk)
-        val = aInorm[i - 1]
-
+    for i in xrange(numSamples):
+        val = aInorm[i]
         if val > opt_v:
             opt_v = val
             opt_x.fill(0)
+
+            # Only copy what we need
+            a = gpu_slice(dA, i).reshape(p, 1)
+            Ik = gpu_slice(dI, i).reshape(k, 1)
+            aIk = a[Ik]
             opt_x[Ik] = (aIk / val)
 
     return Vd, opt_x
