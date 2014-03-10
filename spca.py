@@ -25,12 +25,8 @@ def generate_input():
 
 
 def spca_unopt(A, epsilon=0.1, d=3, k=10):
-    p = A.shape[0]
-
-    U, S, _ = np.linalg.svd(A)
-
-    #Vd = U[:,1:d+1].dot(np.diag(np.sqrt(S[1:d+1])))
-    Vd = U[:, 0:d].dot(np.diag(np.sqrt(S[0:d])))
+    Vd = A
+    p = Vd.shape[0]
     numSamples = (4. / epsilon) ** d
 
     ##actual algorithm
@@ -61,7 +57,7 @@ def spca_unopt(A, epsilon=0.1, d=3, k=10):
             #print((a[I[0:k]]/val).shape)
             opt_x[I[-k:]] = a[I[-k:], :] / val
 
-    return Vd, opt_x
+    return opt_x
 
 
 @cuda.jit("void(float64[:,:], int32)")
@@ -233,12 +229,9 @@ def gpu_slice(arr, col):
 
 
 def spca(A, epsilon=0.1, d=3, k=10):
-    p = A.shape[0]
-
-    U, S, _ = np.linalg.svd(A)
-
-    #Vd = U[:,1:d+1].dot(np.diag(np.sqrt(S[1:d+1])))
-    Vd = U[:, 0:d].dot(np.diag(np.sqrt(S[0:d])))
+    
+    Vd = A
+    p = Vd.shape[0]
     numSamples = int((4. / epsilon) ** d)
 
     ##actual algorithm
@@ -286,7 +279,7 @@ def spca(A, epsilon=0.1, d=3, k=10):
             aIk = a[Ik]
             opt_x[Ik] = (aIk / val)
 
-    return Vd, opt_x
+    return opt_x
 
 
 def generate_input_file():
@@ -313,10 +306,41 @@ def benchmark():
     print(min(timeit.repeat(lambda: spca(A), repeat=3, number=1)))
     # Best CPU time 7.05 seconds
 
+def benchmarkLarge():
+    A = np.load(cached_input_file)
+    dmax = 5
+    kmax = 50
+    #SVD ONLY HERE
+    p = A.shape[0]
+    U, S, _ = np.linalg.svd(A)
+    
+    for dit in range(2,dmax+1):
+    	Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
+	print Vd.shape[0]
+        for kit in range(10,kmax+1,10):
+            #eventually another loop for iterations
+            #print(min(timeit.repeat(lambda: spca(Vd, d=dit, k=kit), repeat=3, number=1)))
+            #print(min(timeit.repeat(lambda: spca_unopt(Vd, d=dit, k=kit), repeat=3, number=1)))
+	    
+            t1 = timeit.default_timer()
+            outGPU = spca(Vd, d=dit, k=kit)
+            t2 = timeit.default_timer()
+            outCPU = spca_unopt(Vd, d=dit, k=kit)
+	    t3 = timeit.default_timer()
+
+            
+	    Gopt = outGPU.T.dot(A.dot(outGPU))
+	    Copt = outCPU.T.dot(A.dot(outCPU))
+
+	    print("%d, %d, %f, %f, %f, %f" % (dit, kit, t2-t1, t3-t2, Gopt, Copt))
+
+
 
 def main():
     if '--gen' in sys.argv:
         generate_input_file()
+    elif '--benchL' in sys.argv:
+	benchmarkLarge()
     elif '--bench' in sys.argv:
         benchmark()
     else:
