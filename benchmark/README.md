@@ -5,8 +5,8 @@ A benchmark data file is a text file with the following formatting:
 * spaces are ignored
 
 Each row should contain columns in the following order:
-* k
 * d
+* k
 * GPU time
 * CPU time
 * GPU result

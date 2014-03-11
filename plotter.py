@@ -6,7 +6,7 @@ Example:
     python plotter.py benchmark/bm1_gtx780ti_f64.txt
 
 Data are expected to be in the form:
-    k, d, gpu time, cpu time, gpu result, cpu result
+    d, k, gpu time, cpu time, gpu result, cpu result
 """
 from __future__ import print_function, division, absolute_import
 from collections import defaultdict
@@ -16,13 +16,13 @@ from matplotlib import pyplot as plt
 
 
 def plot(filename):
-    kbin = defaultdict(list)
+    dbin = defaultdict(list)
     with open(filename) as fin:
         lines = list(fin)
 
         # Sanitize input
         for line in lines:
-            k, d, tgpu, tcpu, resgpu, rescpu = map(lambda s: s.strip(),
+            d, k, tgpu, tcpu, resgpu, rescpu = map(lambda s: s.strip(),
                                                    line.split(','))
 
             k = int(k)
@@ -33,31 +33,31 @@ def plot(filename):
             # Ignoring resgpu and rescpu for now
             del resgpu, rescpu
 
-            kbin[k].append((d, tgpu, tcpu))
+            dbin[d].append((k, tgpu, tcpu))
 
     ax = plt.subplot()
 
-    for k, datapts in kbin.items():
+    for d, datapts in dbin.items():
         n = len(datapts)
         xarr = np.zeros(n, dtype='int')
         yspeedup = np.zeros(n, dtype='float')
-        for i, (d, tgpu, tcpu) in enumerate(datapts):
-            xarr[i] = d
+        for i, (k, tgpu, tcpu) in enumerate(datapts):
+            xarr[i] = k
             yspeedup[i] = tcpu / tgpu
-        ax.plot(xarr, yspeedup, label=("k=%d" % k))
+        ax.plot(xarr, yspeedup, '-x', label=("d=%d" % d))
         # ygpu = np.zeros(n, dtype='float')
         # ycpu = np.zeros(n, dtype='float')
         #
-        # for i, (d, tgpu, tcpu) in enumerate(datapts):
-        #     xarr[i] = d
+        # for i, (k, tgpu, tcpu) in enumerate(datapts):
+        #     xarr[i] = k
         #     ygpu[i] = tgpu
         #     ycpu[i] = tcpu
 
-        # ax.plot(xarr, ygpu, label=("gpu k=%d" % k))
-        # ax.plot(xarr, ycpu, label=("cpu k=%d" % k))
+        # ax.plot(xarr, ygpu, label=("gpu d=%d" % d))
+        # ax.plot(xarr, ycpu, label=("cpu d=%d" % d))
 
     ax.set_ylabel("Speedup over CPU")
-    ax.set_xlabel("Accuracy (parameter d)")
+    ax.set_xlabel("Solution Sparsity (parameter k)")
     ax.legend(loc='best')
     plt.show()
 
