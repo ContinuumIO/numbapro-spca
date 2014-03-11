@@ -6,9 +6,6 @@ import math
 from numbapro import cuda, float64, int16, int32
 from numbapro.cudalib import curand, cublas
 
-
-blas = cublas.Blas()
-
 cached_input_file = "input.npy"
 
 
@@ -79,14 +76,23 @@ def norm_random_nums(C, d):
 @cuda.jit("void(float64[:,:], float64[:,:], float64[:, :])")
 def batch_matmul(Vd, C, A):
     sampleIdx = cuda.blockIdx.x
-    tid = cuda.threadIdx.x
+    tid = int32(cuda.threadIdx.x)
+    ntid = int32(cuda.blockDim.x)
 
-    sum = 0.0
-    # Assume C.shape[0] is usually small
-    for k in range(C.shape[0]):
-        sum += Vd[tid, k] * C[k, sampleIdx]
+    remain = Vd.shape[0]
 
-    A[tid, sampleIdx] = sum
+    offset = 0
+    while tid < remain:
+        j = tid + offset
+
+        sum = 0.0
+        for k in range(C.shape[0]):
+            sum += Vd[j, k] * C[k, sampleIdx]
+
+        A[j, sampleIdx] = sum
+
+        remain -= ntid
+        offset += ntid
 
 
 @cuda.jit("void(float64[::1], int32, int32)", device=True)
@@ -214,27 +220,37 @@ def calc_ncta1d(size, blksz):
     return size + (blksz - 1) // blksz
 
 
-def gpu_slice(arr, col):
-    """
-    Missing feature in NumbaPro
-    """
-    from numbapro.cudadrv.driver import device_to_host, DeviceView
+def gpu_slice_view(arr, col):
+    from numbapro.cudadrv.driver import DeviceView
 
     strides = arr.strides
     s = col * strides[1]
     e = (col + 1) * strides[1]
-    host = np.empty(shape=arr.shape[0], dtype=arr.dtype)
     view = DeviceView(arr.gpu_data, s, e)
-    device_to_host(host, view, e - s)
+    return view, e - s
+
+
+def gpu_slice(arr, col):
+    """
+    Missing feature in NumbaPro
+    """
+    from numbapro.cudadrv.driver import device_to_host
+
+    view, size = gpu_slice_view(arr, col)
+    host = np.empty(shape=arr.shape[0], dtype=arr.dtype)
+    device_to_host(host, view, size)
     return host
 
+
+def perform_batch_matmul(dVd, dC, dA, numSamples, custr):
+    batch_matmul[numSamples, 512, custr](dVd, dC, dA)
 
 
 def spca(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     initNumSamples = int((4. / epsilon) ** d)
 
-    maxSize = 64000
+    maxSize = 32000
 
     ##actual algorithm
     opt_x = np.zeros((p, 1))
@@ -269,7 +285,7 @@ def spca(Vd, epsilon=0.1, d=3, k=10):
         # XXX: Vd.shape[0] must be within compute capability requirement
         # Note: this kernel can be easily scaled due to the use of num of samples
         #       as the ncta
-        batch_matmul[numSamples, Vd.shape[0], custr](dVd, dC, dA)
+        perform_batch_matmul(dVd, dC, dA, numSamples, custr)
 
         # Replaces: I = np.argsort(a, axis=0)
         # Note: the k-selection is dominanting the time
