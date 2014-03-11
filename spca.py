@@ -242,10 +242,6 @@ def gpu_slice(arr, col):
     return host
 
 
-def perform_batch_matmul(dVd, dC, dA, numSamples, custr):
-    batch_matmul[numSamples, 512, custr](dVd, dC, dA)
-
-
 def spca(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     initNumSamples = int((4. / epsilon) ** d)
@@ -285,7 +281,7 @@ def spca(Vd, epsilon=0.1, d=3, k=10):
         # XXX: Vd.shape[0] must be within compute capability requirement
         # Note: this kernel can be easily scaled due to the use of num of samples
         #       as the ncta
-        perform_batch_matmul(dVd, dC, dA, numSamples, custr)
+        batch_matmul[numSamples, 512, custr](dVd, dC, dA)
 
         # Replaces: I = np.argsort(a, axis=0)
         # Note: the k-selection is dominanting the time
