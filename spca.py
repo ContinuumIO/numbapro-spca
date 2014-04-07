@@ -221,12 +221,12 @@ def calc_ncta1d(size, blksz):
 
 
 def gpu_slice_view(arr, col):
-    from numbapro.cudadrv.driver import DeviceView
 
     strides = arr.strides
     s = col * strides[1]
     e = (col + 1) * strides[1]
-    view = DeviceView(arr.gpu_data, s, e)
+    view = arr.gpu_data.view(s, e)
+    # view = DeviceView(arr.gpu_data, s, e)
     return view, e - s
 
 
@@ -234,7 +234,7 @@ def gpu_slice(arr, col):
     """
     Missing feature in NumbaPro
     """
-    from numbapro.cudadrv.driver import device_to_host
+    from numba.cuda.cudadrv.driver import device_to_host
 
     view, size = gpu_slice_view(arr, col)
     host = np.empty(shape=arr.shape[0], dtype=arr.dtype)
