@@ -159,32 +159,58 @@ def cuda_prefixsum_base2(masks, indices, init, nelem, nround, nidx_out):
         indices[block_offset + 2 * tid + 1] = sm[2 * tid + 1]
 
 
-def cuda_prefixsum_buildblock(masks, indices, total):
-    nelem = masks.size
-    assert nelem <= 1024
-    assert np.log2(nelem).is_integer()
-    assert indices.size == masks.size
-    assert total.size == 1
+@cuda.autojit
+def cuda_prefixsum_fix(indices, blksums):
+    tid = cuda.grid(1)
+    blkid = cuda.blockIdx.x
+    blksz = cuda.blockDim.x
+    i = blksz + tid
+    total = blksums[0]
+    for j in range(1, blkid + 1):
+        total += blksums[j]
+    indices[i] += total
 
-    nround = np.log2(nelem)
-    cuda_prefixsum_base2[1, nelem // 2](masks, indices, 0, nelem, nround, total)
+
+@numba.autojit
+def prefixsum_fast(masks, indices, init, nelem):
+    carry = init
+    for i in range(nelem):
+        indices[i] = carry
+        if masks[i]:
+            carry += 1
+
+    indices[nelem] = carry
+    return carry
 
 
 def cuda_prefixsum(masks, indices):
     nelem = masks.size
-    segsz = 1024
-    nseg, remain = divmod(nelem, segsz)
-    ntotal = nseg + (1 if remain else 0)
-    total = cuda.device_array(shape=ntotal)
-    for i in range(nseg):
-        s = i * segsz
-        e = (i + 1) * segsz
-        segmasks = masks[s:e]
-        segindices = indices[s:e]
-        segtotal = total[i:i+1]
-        cuda_prefixsum_buildblock(segmasks, segindices, segtotal)
+    blksz = 1024
+    nblk, remain = divmod(nelem, blksz)
+    nround = np.log2(blksz)
+    lastinit = 0
 
-    # while remain:
+    # Uses the GPU to compute the prefixsum for blocks of 1024
+    if nblk:
+        stream = cuda.stream()
+        blksums = cuda.device_array(shape=nblk, dtype=np.intp, stream=stream)
+        cuda_prefixsum_base2[nblk, blksz // 2, stream](masks, indices, 0, blksz,
+                                                       nround, blksums)
+        blksums_host = blksums.copy_to_host(stream=stream)
+
+        # Fix the count from the second block onwards
+        if nblk > 1:
+            cuda_prefixsum_fix[nblk - 1, blksz, stream](indices, blksums)
+
+        stream.synchronize()
+        lastinit = blksums_host.sum()
+
+    # Uses the CPU to compute the remaining elements
+    if remain:
+        prefixsum_fast(masks[-remain:], indices[-remain - 1:], lastinit,
+                       remain)
+    else:
+        indices[-1] = lastinit
 
 
 def minmax(array):
@@ -268,18 +294,15 @@ def test_k_bucket_largest():
 
 
 def test_prefixsum():
-    values = np.arange(2048)
+    values = np.arange(1100)
     masks = np.ones(shape=values.size, dtype=np.int8)
     # mapfn(lambda x: x % 2 == 0, values, masks)
-    indices = np.zeros(shape=masks.size, dtype=np.intp)
-    out = np.zeros(shape=2, dtype=np.intp)
+    indices = np.zeros(shape=masks.size + 1, dtype=np.intp)
 
-    nelem = 1024
-    nround = np.log2(nelem)
-    cuda_prefixsum_base2[2, nelem//2](masks, indices, 0, nelem, nround, out)
+    cuda_prefixsum(masks, indices)
+
     print(masks)
     print(indices)
-    print(out)
 
 
 if __name__ == '__main__':
