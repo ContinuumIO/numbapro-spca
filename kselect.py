@@ -3,6 +3,7 @@ import numpy as np
 from numbapro import cuda
 import numba
 
+
 def prefixsum(masks, indices, init=0, nelem=None):
     nelem = masks.size if nelem is None else nelem
 
@@ -20,12 +21,9 @@ def scatterprefix(indices, inarr, outarr, nelem=None):
     nelem = inarr.size if nelem is None else nelem
     assert indices.size > nelem
     for i in range(nelem):
-        do_assign = False
         curidx = indices[i]
         rightidx = indices[i + 1]
         if curidx != rightidx:
-            do_assign = True
-        if do_assign:
             outarr[curidx] = inarr[i]
 
 
@@ -68,6 +66,7 @@ def cuda_map_ge(arr, lo, res):
     i = cuda.grid(1)
     res[i] = arr[i] >= lo
 
+
 @cuda.autojit
 def cuda_map_lt(arr, hi, res):
     i = cuda.grid(1)
@@ -79,32 +78,42 @@ def cuda_map_within(arr, hi, lo, res):
     i = cuda.grid(1)
     res[i] = hi > arr[i] >= lo
 
+
 @cuda.autojit
-def cuda_prefixsum_base2(masks, indices, init, nelem):
+def cuda_prefixsum_base2(masks, indices, init, nelem, nround, nidx_out):
     """
+    Prefix-sum building block.  Performs blocked prefixsum over blocks of
+    1024 elements maximum.
+
     Args
     ----
     nelem:
-        Must be power of 2.
+        Number of element per bock. Must be power of 2 and <= 1024.
+    nround:
+        precomputed log2(nelem)
 
     Note
     ----
-    Launch 2*nelem threads.  Support 1 block/grid.
+    Launch nelem/2 threads. Hardcoded to do 1024 element maximum due to
+    shared memory limitation.
     """
     sm = cuda.shared.array((1024,), dtype=numba.int64)
     tid = cuda.threadIdx.x
+    blkid = cuda.blockIdx.x
+    block_offset = blkid * nelem
 
     # Preload
     if 2 * tid + 1 < nelem:
-        sm[2 * tid] = masks[2 * tid]
-        sm[2 * tid + 1] = masks[2 * tid + 1]
+        sm[2 * tid] = masks[block_offset + 2 * tid]
+        sm[2 * tid + 1] = masks[block_offset + 2 * tid + 1]
 
     # Up phase
+    # This is a reduction.  Sum is stored in the last element.
     limit = nelem >> 1
     step = 1
     idx = tid * 2
     two_d = 1
-    for d in range(3):
+    for d in range(nround):
         offset = two_d - 1
 
         if tid < limit:
@@ -115,20 +124,67 @@ def cuda_prefixsum_base2(masks, indices, init, nelem):
         step <<= 1
         two_d <<= 1
 
-    cuda.syncthreads()
-
     # Down phase
-
     if tid == 0:
-        sm[nelem - 1] = 0
+        # Write total of ones in mask
+        nidx_out[blkid] = sm[nelem - 1]
+        sm[nelem - 1] = init
 
+    limit = 1
+    step = nelem // 2
+    two_d = nelem
+    for d in range(nround):
+        cuda.syncthreads()
+
+        offset = two_d - 1
+        idx = tid * two_d
+
+        if tid < limit:
+            storeidx = offset + idx
+            swapidx = offset + idx - step
+            stval = sm[storeidx]
+            swval = sm[swapidx]
+            sm[swapidx] = stval
+            sm[storeidx] = stval + swval
+
+        limit <<= 1
+        step >>= 1
+        two_d >>= 1
 
     cuda.syncthreads()
 
     # Writeback
     if 2 * tid + 1 < nelem:
-        indices[2 * tid] = sm[2 * tid]
-        indices[2 * tid + 1] = sm[2 * tid + 1]
+        indices[block_offset + 2 * tid] = sm[2 * tid]
+        indices[block_offset + 2 * tid + 1] = sm[2 * tid + 1]
+
+
+def cuda_prefixsum_buildblock(masks, indices, total):
+    nelem = masks.size
+    assert nelem <= 1024
+    assert np.log2(nelem).is_integer()
+    assert indices.size == masks.size
+    assert total.size == 1
+
+    nround = np.log2(nelem)
+    cuda_prefixsum_base2[1, nelem // 2](masks, indices, 0, nelem, nround, total)
+
+
+def cuda_prefixsum(masks, indices):
+    nelem = masks.size
+    segsz = 1024
+    nseg, remain = divmod(nelem, segsz)
+    ntotal = nseg + (1 if remain else 0)
+    total = cuda.device_array(shape=ntotal)
+    for i in range(nseg):
+        s = i * segsz
+        e = (i + 1) * segsz
+        segmasks = masks[s:e]
+        segindices = indices[s:e]
+        segtotal = total[i:i+1]
+        cuda_prefixsum_buildblock(segmasks, segindices, segtotal)
+
+    # while remain:
 
 
 def minmax(array):
@@ -212,37 +268,21 @@ def test_k_bucket_largest():
 
 
 def test_prefixsum():
-    values = np.arange(8)
+    values = np.arange(2048)
     masks = np.ones(shape=values.size, dtype=np.int8)
     # mapfn(lambda x: x % 2 == 0, values, masks)
-    indices = np.zeros(shape=masks.size + 1, dtype=np.intp)
+    indices = np.zeros(shape=masks.size, dtype=np.intp)
+    out = np.zeros(shape=2, dtype=np.intp)
 
-    cuda_prefixsum_base2[1, values.size//2](masks, indices, 0, values.size)
-
+    nelem = 1024
+    nround = np.log2(nelem)
+    cuda_prefixsum_base2[2, nelem//2](masks, indices, 0, nelem, nround, out)
     print(masks)
     print(indices)
-
-
-def check_indices():
-    for tid in range(8):
-        limit = 4
-        step = 1
-        idx = tid * 2
-        two_d = 1
-        for d in range(4):
-            offset = two_d - 1
-            if tid < limit:
-                print(tid, "write", offset + idx, offset + idx + step)
-                #sm[offset + idx] += sm[offset + idx + step]
-
-            limit //= 2
-            idx *= 2
-            step *= 2
-            two_d *= 2
+    print(out)
 
 
 if __name__ == '__main__':
     # test_primitives()
     # test_k_bucket_largest()
     test_prefixsum()
-    # check_indices()
