@@ -6,6 +6,11 @@ import math
 from numbapro import cuda, float64, int16, int32
 from numbapro.cudalib import curand, cublas
 
+try:
+    xrange
+except NameError:
+    xrange = range
+
 cached_input_file = "input.npy"
 
 
