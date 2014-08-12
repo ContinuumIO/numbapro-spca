@@ -61,6 +61,36 @@ def n_way_bucket(array, vmin, vmax, numbucket, buckets):
     return buckends
 
 
+def cuda_n_way_bucket(array, vmin, vmax, numbucket, buckets):
+    indices = np.empty(shape=array.size + 1, dtype=np.intp)
+    bucket_width = (vmax - vmin) / numbucket
+    masks = np.empty(shape=array.size, dtype=np.bool)
+
+    buckends = np.zeros(numbucket, dtype=np.intp)
+
+    # Do bucketing
+    for b in range(numbucket):
+        lo = vmin + b * bucket_width
+        hi = lo + bucket_width
+        if b == numbucket - 1:
+            cuda_map_ge.forall(masks.size)(array, hi, masks)
+        elif b == 0:
+            cuda_map_lt.forall(masks.size)(array, hi, masks)
+        else:
+            cuda_map_within.forall(masks.size)(array, hi, lo, masks)
+        init = 0
+        if b > 0:
+            init = buckends[b - 1]
+        end = cuda_prefixsum(masks, indices, init)
+        buckends[b] = end
+        scatterprefix(indices, array, buckets)
+
+    return buckends
+
+
+
+
+
 @cuda.autojit
 def cuda_map_ge(arr, lo, res):
     i = cuda.grid(1)
@@ -183,12 +213,12 @@ def prefixsum_fast(masks, indices, init, nelem):
     return carry
 
 
-def cuda_prefixsum(masks, indices):
+def cuda_prefixsum(masks, indices, init=0):
     nelem = masks.size
     blksz = 1024
     nblk, remain = divmod(nelem, blksz)
     nround = np.log2(blksz)
-    lastinit = 0
+    lastinit = init
 
     # Uses the GPU to compute the prefixsum for blocks of 1024
     if nblk:
@@ -207,10 +237,11 @@ def cuda_prefixsum(masks, indices):
 
     # Uses the CPU to compute the remaining elements
     if remain:
-        prefixsum_fast(masks[-remain:], indices[-remain - 1:], lastinit,
+        return prefixsum_fast(masks[-remain:], indices[-remain - 1:], lastinit,
                        remain)
     else:
         indices[-1] = lastinit
+        return lastinit
 
 
 def minmax(array):
@@ -236,6 +267,43 @@ def k_largest(array, k):
         vmin, vmax = minmax(array)
         buckends = n_way_bucket(array, vmin=vmin, vmax=vmax,
                                 numbucket=numbucket, buckets=buckets)
+
+        e = buckends[-1]
+        for i in range(1, buckends.size):
+            s = buckends[-i]
+            if e - s >= k:
+                break
+
+        newset = buckets[s:e]
+        tmparray = np.empty(newset.size, dtype=newset.dtype)
+        tmparray[:] = newset
+        array = tmparray
+        numbucket = array.size // k
+
+        del buckets
+
+    if numbucket > 1:
+        buckets = np.empty_like(array)
+
+        vmin, vmax = minmax(array)
+        buckends = n_way_bucket(array, vmin=vmin, vmax=vmax,
+                                numbucket=numbucket, buckets=buckets)
+        result = buckets[buckends[-2]:]
+    else:
+        result = array.copy()
+    result.sort()
+    return result[-k:]
+
+
+def cuda_k_largest(array, k):
+    limit = 8
+    numbucket = array.size // k
+    while numbucket > limit:
+        numbucket = limit
+        buckets = np.empty_like(array)
+        vmin, vmax = minmax(array)
+        buckends = cuda_n_way_bucket(array, vmin=vmin, vmax=vmax,
+                                     numbucket=numbucket, buckets=buckets)
 
         e = buckends[-1]
         for i in range(1, buckends.size):
@@ -292,6 +360,20 @@ def test_k_bucket_largest():
     print(expect)
     assert np.all(expect == got)
 
+def test_cuda_k_bucket_largest():
+    array = np.array(list(reversed(range(100))), dtype=np.float64)
+    print(array.size)
+    k = 5
+    got = cuda_k_largest(array, k)
+
+    sortedarray = array.copy()
+    sortedarray.sort()
+    expect = sortedarray[-k:]
+
+    print(got)
+    print(expect)
+    assert np.all(expect == got)
+
 
 def test_prefixsum():
     values = np.arange(1100)
@@ -307,5 +389,5 @@ def test_prefixsum():
 
 if __name__ == '__main__':
     # test_primitives()
-    # test_k_bucket_largest()
-    test_prefixsum()
+    test_cuda_k_bucket_largest()
+    # test_prefixsum()
