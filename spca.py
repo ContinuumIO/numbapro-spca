@@ -6,7 +6,9 @@ import timeit
 import itertools
 import math
 from numbapro import cuda, int32, float32, float64, void
+
 from numbapro.cudalib import curand, sorting
+from numbapro.cudalib.sorting.radixlib import radix_argselect
 
 cuda.select_device(int(os.environ.get("CUDA_DEVICE", 0)))
 NN = int(os.environ.get("NN", 1000))
@@ -22,6 +24,7 @@ cached_input_file = FILE  # "input.npy"
 
 float_type = float32
 float_dtype = np.float32
+
 
 def generate_input():
     p = NN
@@ -91,7 +94,6 @@ def spca_simpler(Vd, epsilon=0.1, d=3, k=10):
     # Prepare CUDA
     prng = curand.PRNG()
     custr = cuda.stream()
-    sorter = sorting.Radixsort(dtype=float_dtype, stream=custr)
 
     #GENERATE ALL RANDOM SAMPLES BEFORE
     # C = np.random.randn(d, numSamples).astype(float_dtype)
@@ -113,7 +115,8 @@ def spca_simpler(Vd, epsilon=0.1, d=3, k=10):
         # I = np.argsort(a, axis=0)
         # val = np.linalg.norm(a[I[-k:]]) #index backwards to get k largest
 
-        I = sorter.argselect(a[:, 0], k=k, reverse=True)
+        # I = sorter.argselect(a[:, 0], k=k, reverse=True)
+        I = radix_argselect(a[:, 0], k=k, descending=True, stream=custr)
         custr.synchronize()
 
         val = np.linalg.norm(a[:k]) #index to get k largest
@@ -125,7 +128,8 @@ def spca_simpler(Vd, epsilon=0.1, d=3, k=10):
 
     return opt_x
 
-@cuda.jit(void(float_type[:,:], int32))
+
+@cuda.jit(void(float_type[:, :], int32))
 def norm_random_nums(C, d):
     i = cuda.grid(1)
     if i >= C.shape[1]:
@@ -141,7 +145,7 @@ def norm_random_nums(C, d):
         c[j] /= val
 
 
-@cuda.jit(void(float_type[:,:], float_type[:,:], float_type[:, :]))
+@cuda.jit(void(float_type[:, :], float_type[:, :], float_type[:, :]))
 def batch_matmul(Vd, C, A):
     sampleIdx = cuda.blockIdx.x
     tid = int32(cuda.threadIdx.x)
@@ -163,7 +167,7 @@ def batch_matmul(Vd, C, A):
         offset += ntid
 
 
-@cuda.jit(void(float_type[:,:], float_type[:], int32))
+@cuda.jit(void(float_type[:, :], float_type[:], int32))
 def batch_norm(A, aInorm, K):
     tid = cuda.grid(1)
 
@@ -186,7 +190,7 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     initNumSamples = int(math.ceil((4. / epsilon) ** d))
 
-    maxSize = 32000
+    maxSize = 6400
 
     ##actual algorithm
     opt_x = np.zeros((p, 1), dtype=float_dtype)
@@ -199,11 +203,7 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
 
     custr = cuda.stream()
     prng = curand.PRNG(stream=custr)
-
-    rsstr1 = cuda.stream()
-    rsstr2 = cuda.stream()
-    sorter1 = sorting.Radixsort(dtype=float_dtype, stream=rsstr1)
-    sorter2 = sorting.Radixsort(dtype=float_dtype, stream=rsstr2)
+    sorter = sorting.Radixsort(dtype=float_dtype, stream=custr)
 
     while remaining:
         numSamples = min(remaining, maxSize)
@@ -238,75 +238,20 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
         # Replaces: I = np.argsort(a, axis=0)
         # Note: the k-selection is dominanting the time
 
-        custr.synchronize()
-
-        # Distribute the work to two streams
-
-        async_dA1 = dA.bind(rsstr1)
-        async_dI1 = dI.bind(rsstr1)
-        async_dA2 = dA.bind(rsstr2)
-        async_dI2 = dI.bind(rsstr2)
-        # selnext1 = sorter1.batch_argsort(dtype=dA.dtype,
+        async_dA = dA.bind(custr)
+        async_dI = dI.bind(custr)
+        # selnext = sorter.batch_argselect(dtype=dA.dtype,
         #                                  count=dA.shape[0],
+        #                                  k=k,
         #                                  reverse=True)
-        # selnext2 = sorter2.batch_argsort(dtype=dA.dtype,
-        #                                  count=dA.shape[0],
-        #                                  reverse=True)
-
-        selnext1 = sorter1.batch_argselect(dtype=dA.dtype,
-                                            count=dA.shape[0],
-                                            k=k,
-                                            reverse=True)
-        selnext2 = sorter2.batch_argselect(dtype=dA.dtype,
-                                            count=dA.shape[0],
-                                            k=k,
-                                            reverse=True)
-
-        def take2(it):
-            it = iter(it)
-            while True:
-                yield next(it), next(it)
-
-        def work(i, packed):
-            (dA, dI, selnext, stream) = packed
-            # print('read', i)
-            subdA = dA[:, i]
-            yield
-            # print('compute', i)
-            dIi = selnext(subdA)
-            # dIi = dIi.bind(stream) # sort
-            yield
-            # print('write', i)
-            dI[:, i].copy_to_device(dIi, stream=stream) # select
-            # dI[:, i].copy_to_device(dIi[:k], stream=stream) # sort
-            yield
-
-        def exhaust(*args):
-            for _ in zip(*args):
-                pass
-
-        g1 = async_dA1, async_dI1, selnext1, rsstr1
-        g2 = async_dA2, async_dI2, selnext2, rsstr2
-        roundrobin = itertools.cycle([g1, g2])
-
-        seq1 = (exhaust(work(*arg1), work(*arg2))
-                for arg1, arg2
-                in take2(zip(range(numSamples), roundrobin)))
-
-        exhaust(seq1)
-
-        # for i, (async_dA, async_dI, selnext, stream) \
-        #         in zip(range(numSamples), roundrobin()):
+        # for i in range(numSamples):
         #     dIi = selnext(async_dA[:, i])
-        #     async_dI[:, i].copy_to_device(dIi, stream=stream)
-        #
-        #     newprogress = i / numSamples
-        #     if newprogress - lastprogress > 0.1:
-        #         print('progress', newprogress)
-        #         lastprogress = newprogress
+        #     async_dI[:, i].copy_to_device(dIi, stream=custr)
 
-        rsstr1.synchronize()
-        rsstr2.synchronize()
+        for i in range(numSamples):
+            radix_argselect(async_dA[:, i], k=k, stream=custr,
+                            storeidx=async_dI[:, i])
+            # async_dI[:, i].copy_to_device(dIi, stream=custr)
 
         # Replaces: val = np.linalg.norm(a[I[-k:]])
         # batch_scatter_norm[calc_ncta1d(numSamples, 512), 512, custr](dA, dI,
@@ -335,7 +280,9 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
     return opt_x
 
 
-spca = spca_simpler
+# spca = spca_simpler
+spca = spca_full
+
 
 def generate_input_file():
     A = generate_input()
@@ -369,7 +316,7 @@ def benchmark():
         print(min(timeit.repeat(lambda: fn(Vd, d=dit, k=kit), repeat=1,
                                 number=1)))
 
-    # Best CPU time 7.05 seconds
+        # Best CPU time 7.05 seconds
 
 
 def benchmarkLarge():
