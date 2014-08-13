@@ -29,10 +29,18 @@ def generate_input():
     X = np.random.randn(n, p).astype(float_dtype)
 
     A = (1. / n) * X.T.dot(X)
+    del X
     U, S, tmp = np.linalg.svd(A)
+    del tmp
     diag = np.diag(1. / np.arange(1, p + 1)).astype(float_dtype)
-    A = U.dot(np.diag(S).dot(diag)).dot(
-        np.conjugate(U.T))
+    t1 = np.diag(S).dot(diag)
+    del diag
+    t2 = U.dot(t1)
+    del t1
+    t3 = np.conjugate(U.T)
+    del U
+    A = t2.dot(t3)
+    del t3
 
     print(A.shape)
     print(A.dtype)
@@ -354,6 +362,7 @@ def benchmark():
     A = np.load(cached_input_file)
     U, S, _ = np.linalg.svd(A)
     Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
+    del U, S, _
 
     funcs = [spca_unopt, spca_full, spca_simpler]
     for fn in funcs:
