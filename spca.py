@@ -6,9 +6,10 @@ import timeit
 import itertools
 import math
 from numbapro import cuda, int32, float32, float64, void
+from timeit import default_timer as timer
 
-from numbapro.cudalib import curand, sorting
-from numbapro.cudalib.sorting.radixlib import radix_argselect
+from numbapro.cudalib import curand
+from numbapro.cudalib.sorting.radixlib import RadixSort
 
 cuda.select_device(int(os.environ.get("CUDA_DEVICE", 0)))
 NN = int(os.environ.get("NN", 1000))
@@ -53,6 +54,7 @@ def generate_input():
 def spca_unopt(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     numSamples = int(math.ceil((4. / epsilon) ** d))
+    print(numSamples)
 
     ##actual algorithm
     opt_x = np.zeros((p, 1))
@@ -86,7 +88,7 @@ def spca_unopt(Vd, epsilon=0.1, d=3, k=10):
 def spca_simpler(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     numSamples = int(math.ceil((4. / epsilon) ** d))
-
+    print(numSamples)
     ##actual algorithm
     opt_x = np.zeros((p, 1))
     opt_v = -np.inf
@@ -99,6 +101,10 @@ def spca_simpler(Vd, epsilon=0.1, d=3, k=10):
     # C = np.random.randn(d, numSamples).astype(float_dtype)
     C = np.empty((d, numSamples), dtype=float_dtype)
     prng.normal(C.ravel(), mean=0, sigma=1)
+
+    sorter = RadixSort(maxcount=Vd.shape[0], dtype=Vd.dtype, stream=custr,
+                       descending=True)
+
 
     for i in range(1, numSamples + 1):
 
@@ -116,8 +122,7 @@ def spca_simpler(Vd, epsilon=0.1, d=3, k=10):
         # val = np.linalg.norm(a[I[-k:]]) #index backwards to get k largest
 
         # I = sorter.argselect(a[:, 0], k=k, reverse=True)
-        I = radix_argselect(a[:, 0], k=k, descending=True, stream=custr)
-        custr.synchronize()
+        I = sorter.argselect(k, a[:, 0])
 
         val = np.linalg.norm(a[:k]) #index to get k largest
 
@@ -189,7 +194,7 @@ def calc_ncta1d(size, blksz):
 def spca_full(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     initNumSamples = int(math.ceil((4. / epsilon) ** d))
-
+    print(initNumSamples)
     maxSize = 6400
 
     ##actual algorithm
@@ -203,7 +208,8 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
 
     custr = cuda.stream()
     prng = curand.PRNG(stream=custr)
-    sorter = sorting.Radixsort(dtype=float_dtype, stream=custr)
+    sorter = RadixSort(maxcount=Vd.shape[0], dtype=Vd.dtype, stream=custr,
+                       descending=True)
 
     while remaining:
         numSamples = min(remaining, maxSize)
@@ -240,6 +246,7 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
 
         async_dA = dA.bind(custr)
         async_dI = dI.bind(custr)
+
         # selnext = sorter.batch_argselect(dtype=dA.dtype,
         #                                  count=dA.shape[0],
         #                                  k=k,
@@ -249,9 +256,10 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
         #     async_dI[:, i].copy_to_device(dIi, stream=custr)
 
         for i in range(numSamples):
-            radix_argselect(async_dA[:, i], k=k, stream=custr,
-                            storeidx=async_dI[:, i])
-            # async_dI[:, i].copy_to_device(dIi, stream=custr)
+            # radix_argselect(async_dA[:, i], k=k, stream=custr,
+            #                 storeidx=async_dI[:, i])
+            dIi = sorter.argselect(k, async_dA[:, i])
+            async_dI[:, i].copy_to_device(dIi, stream=custr)
 
         # Replaces: val = np.linalg.norm(a[I[-k:]])
         # batch_scatter_norm[calc_ncta1d(numSamples, 512), 512, custr](dA, dI,
@@ -262,7 +270,6 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
 
         custr.synchronize()
 
-        # print(aInorm)
         for i in xrange(numSamples):
             val = aInorm[i]
             if val > opt_v:
@@ -306,15 +313,25 @@ def check_result():
 def benchmark():
     dit = 2
     kit = 10
+
+    ts = timer()
     A = np.load(cached_input_file)
     U, S, _ = np.linalg.svd(A)
     Vd = U[:, 0:dit].dot(np.diag(np.sqrt(S[0:dit])))
     del U, S, _
 
+    te = timer()
+    print('prepare', te - ts)
+
     funcs = [spca_unopt, spca_full, spca_simpler]
     for fn in funcs:
-        print(min(timeit.repeat(lambda: fn(Vd, d=dit, k=kit), repeat=1,
-                                number=1)))
+        print(fn)
+        ts = timer()
+        fn(Vd, d=dit, k=kit)
+        te = timer()
+        print(te - ts)
+        # print(min(timeit.repeat(lambda: fn(Vd, d=dit, k=kit), repeat=1,
+        #                         number=1)))
 
         # Best CPU time 7.05 seconds
 
