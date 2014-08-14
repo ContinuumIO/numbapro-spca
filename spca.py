@@ -10,6 +10,7 @@ from timeit import default_timer as timer
 
 from numbapro.cudalib import curand
 from numbapro.cudalib.sorting.radixlib import RadixSort
+from numbapro.cudalib.sorting.segsort import segmented_sort
 
 cuda.select_device(int(os.environ.get("CUDA_DEVICE", 0)))
 NN = int(os.environ.get("NN", 1000))
@@ -105,7 +106,6 @@ def spca_simpler(Vd, epsilon=0.1, d=3, k=10):
     sorter = RadixSort(maxcount=Vd.shape[0], dtype=Vd.dtype, stream=custr,
                        descending=True)
 
-
     for i in range(1, numSamples + 1):
 
         #c = np.random.randn(d,1)
@@ -191,6 +191,17 @@ def calc_ncta1d(size, blksz):
     return size + (blksz - 1) // blksz
 
 
+@cuda.jit("void(uint32[::1,:])")
+def init_indices(I):
+    i, j = cuda.grid(2)
+    if i < I.shape[0] and j < I.shape[1]:
+        I[i, j] = i
+
+
+def divup(x, y):
+    return (x + (y - 1)) // y
+
+
 def spca_full(Vd, epsilon=0.1, d=3, k=10):
     p = Vd.shape[0]
     initNumSamples = int(math.ceil((4. / epsilon) ** d))
@@ -207,10 +218,11 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
     remaining = initNumSamples
 
     custr = cuda.stream()
-    prng = curand.PRNG(stream=custr)
-    sorter = RadixSort(maxcount=Vd.shape[0], dtype=Vd.dtype, stream=custr,
-                       descending=True)
 
+    # sorter = RadixSort(maxcount=Vd.shape[0], dtype=Vd.dtype, stream=custr,
+    #                    descending=True)
+
+    prng = curand.PRNG(stream=custr)
     while remaining:
         numSamples = min(remaining, maxSize)
         remaining -= numSamples
@@ -222,7 +234,8 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
 
         dA = cuda.device_array(shape=(Vd.shape[0], numSamples), order='F',
                                dtype=Vd.dtype)
-        dI = cuda.device_array(shape=(k, numSamples), dtype=np.uint32,
+        dI = cuda.device_array(shape=(Vd.shape[0], numSamples),
+                               dtype=np.uint32,
                                order='F')
         daInorm = cuda.device_array(shape=numSamples, dtype=Vd.dtype)
         dC = cuda.device_array(shape=(d, numSamples), order='F',
@@ -243,9 +256,15 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
 
         # Replaces: I = np.argsort(a, axis=0)
         # Note: the k-selection is dominanting the time
+        nn = Vd.shape[0]
+        segments = (np.arange(numSamples - 1, dtype=np.int32) + 1) * nn
+        blksz = 32
+        init_indices[(divup(dI.shape[0], blksz), divup(dI.shape[1], blksz)),
+                     (blksz, blksz), custr](dI)
+        segmented_sort(dA, dI, segments, stream=custr)
 
-        async_dA = dA.bind(custr)
-        async_dI = dI.bind(custr)
+        # async_dA = dA.bind(custr)
+        # async_dI = dI.bind(custr)
 
         # selnext = sorter.batch_argselect(dtype=dA.dtype,
         #                                  count=dA.shape[0],
@@ -255,15 +274,20 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
         #     dIi = selnext(async_dA[:, i])
         #     async_dI[:, i].copy_to_device(dIi, stream=custr)
 
-        for i in range(numSamples):
-            # radix_argselect(async_dA[:, i], k=k, stream=custr,
-            #                 storeidx=async_dI[:, i])
-            dIi = sorter.argselect(k, async_dA[:, i])
-            async_dI[:, i].copy_to_device(dIi, stream=custr)
+        # for i in range(numSamples):
+        #     # radix_argselect(async_dA[:, i], k=k, stream=custr,
+        #     #                 storeidx=async_dI[:, i])
+        #     dIi = sorter.argselect(k, async_dA[:, i])
+        #     async_dI[:, i].copy_to_device(dIi, stream=custr)
+
+
 
         # Replaces: val = np.linalg.norm(a[I[-k:]])
         # batch_scatter_norm[calc_ncta1d(numSamples, 512), 512, custr](dA, dI,
         #                                                              daInorm)
+
+        dA = dA[-k:]
+        dI = dI[-k:]
         batch_norm[calc_ncta1d(numSamples, 512), 512, custr](dA, daInorm, k)
 
         aInorm = daInorm.copy_to_host(stream=custr)
@@ -278,7 +302,7 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
 
                 # Only copy what we need
                 Ik = dI[:, i].copy_to_host()
-                aIk = dA[:k, i].copy_to_host().reshape(k, 1)
+                aIk = dA[:, i].copy_to_host().reshape(k, 1)
                 opt_x[Ik] = (aIk / val)
 
         # Free allocations
@@ -323,7 +347,7 @@ def benchmark():
     te = timer()
     print('prepare', te - ts)
 
-    funcs = [spca_unopt, spca_full, spca_simpler]
+    funcs = [spca_unopt, spca_full] #, spca_simpler]
     for fn in funcs:
         print(fn)
         ts = timer()
