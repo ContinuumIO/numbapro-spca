@@ -9,7 +9,7 @@ from numbapro import cuda, int32, float32, float64, void
 from timeit import default_timer as timer
 
 from numbapro.cudalib import curand
-from numbapro.cudalib.sorting.radixlib import RadixSort
+# from numbapro.cudalib.sorting.radixlib import RadixSort
 from numbapro.cudalib.sorting.segsort import segmented_sort
 
 cuda.select_device(int(os.environ.get("CUDA_DEVICE", 0)))
@@ -286,8 +286,8 @@ def spca_full(Vd, epsilon=0.1, d=3, k=10):
         # batch_scatter_norm[calc_ncta1d(numSamples, 512), 512, custr](dA, dI,
         #                                                              daInorm)
 
-        dA = dA[-k:]
-        dI = dI[-k:]
+        dA = dA.bind(custr)[-k:]
+        dI = dI.bind(custr)[-k:]
         batch_norm[calc_ncta1d(numSamples, 512), 512, custr](dA, daInorm, k)
 
         aInorm = daInorm.copy_to_host(stream=custr)
