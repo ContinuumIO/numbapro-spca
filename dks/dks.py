@@ -1,13 +1,42 @@
 from __future__ import print_function, absolute_import, division
 import math
+from contextlib import contextmanager
 import numpy as np
 import scipy
 import matplotlib.pyplot as plt
 import networkx as nx
+from timeit import default_timer as timer
 
 import wdc_dataset as wdc
+import progress
 
 float_dtype = np.dtype(np.float32)
+
+
+@contextmanager
+def benchmark(name):
+    print("--- {name}".format(name=name))
+    ts = timer()
+    yield
+    te = timer()
+    print("=== {name} takes {duration}s".format(name=name, duration=te - ts))
+
+
+class CumulativeTime(object):
+    def __init__(self, name):
+        self.name = name
+        self.duration = 0
+
+    @contextmanager
+    def time(self):
+        ts = timer()
+        yield
+        te = timer()
+        self.duration += te - ts
+
+    def __repr__(self):
+        print("~~~ {name} takes {duration}s".format(name=self.name,
+                                                    duration=self.duration))
 
 
 def compute_Vd(A, d):
@@ -35,17 +64,38 @@ def spannogram_Dks_eps_psd(k, V, eps, delta):
     Mopt = (1 + 4 / eps) ** d
     M = (math.log(delta) - math.log(Mopt)) / math.log(1 - 1 / Mopt)
     print(M)
-    for _ in range(int(round(M))):
+    print('V.shape =', V.shape)
+
+    t_dot = CumulativeTime("dot")
+    t_argsort = CumulativeTime("argsort")
+    t_norm = CumulativeTime("norm-scatter-square")
+
+    count = int(round(M))
+    for i in range(count):
+        progress.render_progress(i/count, width=50)
+
         c = np.random.randn(d, 1)
-        indx = np.argsort(V.dot(c), axis=0)
+
+        # Do matrix multiplication
+        with t_dot.time():
+            Vc = V.dot(c)
+
+        # Do sort
+        with t_argsort.time():
+            indx = np.argsort(Vc, axis=0)
+
         # Get last k
         topk = indx[-k:]
         # Assume A is huge
-        metric = np.linalg.norm(V[topk, :]) ** 2
+        with t_norm.time():
+            metric = np.linalg.norm(V[topk, :]) ** 2
         if metric > metric_opt:
             metric_opt = metric
             supp_opt = topk
 
+    print(t_dot)
+    print(t_argsort)
+    print(t_norm)
     return metric_opt, supp_opt
 
 
@@ -73,37 +123,50 @@ def build_simple_test_graph():
 
 def dks_pipeline(G, d, k, eps=0.1, delta=0.1):
     # Draw original graph
-    plt.figure(0)
-    layout = nx.spring_layout(G)
-    nx.draw_networkx(G, pos=layout)
+
+    if G.number_of_edges() > 1000:
+        layout = None
+    else:
+        plt.figure(0)
+        print("creating layout")
+        # Note: nx.spring_layout takes a long time for big graphs
+        layout = nx.circular_layout(G)
+
+        print("drawing original graph")
+        nx.draw_networkx(G, pos=layout)
 
     # Get adjacency matrix
-    A = nx.adjacency_matrix(G).astype(np.float32)
+    with benchmark("getting adjacency matrix"):
+        A = nx.adjacency_matrix(G).astype(np.float32)
 
     # Compute rank-d approximation
-    Vd = compute_sparse_Vd(A, d)
+    with benchmark("computing sparse SVD"):
+        Vd = compute_sparse_Vd(A, d)
 
     # Solve for densest subgraph
-    metric, supp = spannogram_Dks_eps_psd(k, Vd, eps=eps, delta=delta)
+    with benchmark("computing spannogram"):
+        metric, supp = spannogram_Dks_eps_psd(k, Vd, eps=eps, delta=delta)
     print('metric', metric)
 
     # Select nodes from result
-    selected = np.array(G.nodes())[supp.flatten()].tolist()
-    Gk = G.subgraph(selected)
+    with benchmark("selecting subgraph"):
+        selected = np.array(G.nodes())[supp.flatten()].tolist()
+        Gk = G.subgraph(selected)
 
     # Draw subgraph
     plt.figure(1)
-    nx.draw_networkx(Gk, pos=layout)
+
+    with benchmark("drawing subgraph"):
+        nx.draw_networkx(Gk, pos=layout)
 
     # Render
-    plt.show()
+    with benchmark('rendering'):
+        plt.show()
 
     return selected
 
 
 def test():
-    d = 2
-    k = 5
     answer = 'bcdeh'
     G = build_simple_test_graph()
     print(G.number_of_nodes(), G.number_of_edges())
@@ -120,6 +183,12 @@ def test_wdc_sample():
     dks_pipeline(G, d=2, k=20)
 
 
+def test_wdc_subsampled():
+    G = wdc.create_graph("pld-index-1m.dat", "pld-arc-1m.dat")
+    dks_pipeline(G, d=2, k=200)
+
+
 if __name__ == '__main__':
     # test()
-    test_wdc_sample()
+    # test_wdc_sample()
+    test_wdc_subsampled()
