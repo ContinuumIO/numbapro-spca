@@ -35,25 +35,58 @@ class CumulativeTime(object):
         self.duration += te - ts
 
     def __repr__(self):
-        print("~~~ {name} takes {duration}s".format(name=self.name,
-                                                    duration=self.duration))
+        return "~~~ {name} takes {duration}s".format(name=self.name,
+                                                     duration=self.duration)
 
 
 def compute_Vd(A, d):
+    """Form Vd with dense SVD
+    Args
+    ----
+    A: numpy array
+        Adjacency matrix
+    d: int
+        rank
+    """
     U, D, _ = np.linalg.svd(A)
     return U[:, :d].dot(np.diag(np.sqrt(D[:d])))
 
 
 def compute_sparse_Vd(A, d):
+    """Form Vd with sparse SVD
+
+    Args
+    ----
+    A: scipy sparse array
+        Adjacency matrix
+    d: int
+        rank
+    """
     U, D, _ = scipy.sparse.linalg.svds(A, k=d)
     return U[:, :d].dot(np.diag(np.sqrt(D[:d])))
 
 
 def spannogram_Dks_eps_psd(k, V, eps, delta):
     """
+    Args
+    ----
+    k: int
+        number of nodes in the output subgraph
+
+    V: numpy array
+        Rank-d approximation matrix
+
+    eps, delta: float
+        Error
+
+    Returns
+    -------
+
+    A tuple of (metric, subgraph node index)
+
     Assumption
     -----------
-    - A is large
+    - Adjacency matrix (A) is large
 
     """
     n, d = V.shape
@@ -72,7 +105,7 @@ def spannogram_Dks_eps_psd(k, V, eps, delta):
 
     count = int(round(M))
     for i in range(count):
-        progress.render_progress(i/count, width=50)
+        progress.render_progress(i / count, width=50)
 
         c = np.random.randn(d, 1)
 
@@ -92,7 +125,7 @@ def spannogram_Dks_eps_psd(k, V, eps, delta):
         if metric > metric_opt:
             metric_opt = metric
             supp_opt = topk
-
+    print()
     print(t_dot)
     print(t_argsort)
     print(t_norm)
@@ -184,7 +217,7 @@ def test_wdc_sample():
 
 
 def test_wdc_subsampled():
-    G = wdc.create_graph("pld-index-1m.dat", "pld-arc-1m.dat")
+    G = wdc.create_graph("pld-index-10k.dat", "pld-arc-10k.dat")
     dks_pipeline(G, d=2, k=200)
 
 
