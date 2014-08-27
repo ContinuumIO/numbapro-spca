@@ -217,7 +217,7 @@ def test_wdc_sample():
 
 
 def test_wdc_subsampled():
-    G = wdc.create_graph("pld-index-10k.dat", "pld-arc-10k.dat")
+    G = wdc.create_graph("pld-index-1m.dat", "pld-arc-1m.dat")
     dks_pipeline(G, d=2, k=200)
 
 
