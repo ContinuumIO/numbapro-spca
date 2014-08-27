@@ -41,19 +41,38 @@ def spannogram_Dks_eps_psd(k, V, eps, delta):
     return metric_opt, supp_opt
 
 
+def build_simple_test_graph():
+    nodes = 'abcdefgh'
+    edges = [
+        'ab',
+        'bc',
+        'bh',
+        'ch',
+        'ce',
+        'cd',
+        'dh',
+        'de',
+        'ef',
+        'fg',
+        'gh',
+    ]
+    G = nx.Graph()
+    G.add_nodes_from(nodes)
+    G.add_edges_from(edges)
+
+    return G
+
+
 def test():
-
     d = 2
-    k = 10
-    # n = 100  # nodes
-    # m = 50  # edges
-
-    G = nx.karate_club_graph() #(n, m, seed=1)
+    k = 5
+    answer = 'bcdeh'
+    G = build_simple_test_graph()
     print(G.number_of_nodes(), G.number_of_edges())
     print(G.nodes())
 
     plt.figure(0)
-    layout = nx.circular_layout(G)
+    layout = nx.spring_layout(G)
     nx.draw_networkx(G, pos=layout)
 
     A = nx.adjacency_matrix(G).todense().A
@@ -65,6 +84,7 @@ def test():
     print(supp)
 
     selected = np.array(G.nodes())[supp.flatten()].tolist()
+    assert set(selected) == set(answer)
     Gk = G.subgraph(selected)
     print(Gk.nodes())
 
@@ -72,7 +92,6 @@ def test():
     nx.draw_networkx(Gk, pos=layout)
 
     plt.show()
-
 
 
 if __name__ == '__main__':
