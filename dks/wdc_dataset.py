@@ -42,7 +42,7 @@ def create_graph(idxfile, arcfile):
 
 
 def create_sample_graph():
-    return create_graph(indexfile="index.dat", arcfile="arc.dat")
+    return create_graph(idxfile="index.dat", arcfile="arc.dat")
 
 
 def subsample_from_arc(arcfile, idxfile, outfile):

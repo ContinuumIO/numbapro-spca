@@ -1,6 +1,7 @@
 from __future__ import print_function, absolute_import, division
 import math
 from contextlib import contextmanager
+import functools
 import numpy as np
 import scipy
 import matplotlib.pyplot as plt
@@ -132,6 +133,102 @@ def spannogram_Dks_eps_psd(k, V, eps, delta):
     return metric_opt, supp_opt
 
 
+class ParallelSpannogram(object):
+    def __init__(self, V, k, threshold):
+        self.Vcs = []
+        self.threshold = threshold
+        self.k = k
+        self.V = V
+
+    def append(self, Vc):
+        self.Vcs.append(Vc)
+
+    def process(self, metric_opt, supp_opt):
+        if len(self.Vcs) >= self.threshold:
+            return self.flush(metric_opt, supp_opt)
+        else:
+            return metric_opt, supp_opt
+
+    def flush(self, metric_opt, supp_opt):
+        k = self.k
+        V = self.V
+        for Vc in self.Vcs:
+            # Do sort
+            indx = np.argsort(Vc, axis=0)
+            # Get last k
+            topk = indx[-k:]
+            # Assume A is huge
+            metric = np.linalg.norm(V[topk, :]) ** 2
+            if metric > metric_opt:
+                metric_opt = metric
+                supp_opt = topk
+
+        # Clear all Vc
+        self.Vcs.clear()
+        return metric_opt, supp_opt
+
+
+def parallel_spannogram_Dks_eps_psd(k, V, eps, delta):
+    """
+    Args
+    ----
+    k: int
+        number of nodes in the output subgraph
+
+    V: numpy array
+        Rank-d approximation matrix
+
+    eps, delta: float
+        Error
+
+    Returns
+    -------
+
+    A tuple of (metric, subgraph node index)
+
+    Assumption
+    -----------
+    - Adjacency matrix (A) is large
+
+    """
+    n, d = V.shape
+
+    supp_opt = 0
+    metric_opt = 0
+
+    Mopt = (1 + 4 / eps) ** d
+    M = (math.log(delta) - math.log(Mopt)) / math.log(1 - 1 / Mopt)
+    print(M)
+    print('V.shape =', V.shape)
+
+    t_dot = CumulativeTime("dot")
+    t_process = CumulativeTime("process")
+
+    count = int(round(M))
+    parspan = ParallelSpannogram(V=V, k=k, threshold=1000)
+    for i in range(count):
+        progress.render_progress(i / count, width=50)
+
+        c = np.random.randn(d, 1)
+
+        # Do matrix multiplication
+        with t_dot.time():
+            Vc = V.dot(c)
+
+        with t_process.time():
+            parspan.append(Vc)
+            metric_opt, supp_opt = parspan.process(metric_opt, supp_opt)
+
+    with t_process.time():
+        metric_opt, supp_opt = parspan.flush(metric_opt, supp_opt)
+
+    print()
+    print(t_dot)
+    print(t_process)
+
+    return metric_opt, supp_opt
+
+
 def build_simple_test_graph():
     nodes = 'abcdefgh'
     edges = [
@@ -154,7 +251,7 @@ def build_simple_test_graph():
     return G
 
 
-def dks_pipeline(G, d, k, eps=0.1, delta=0.1):
+def _dks_pipeline(spannogram, G, d, k, eps=0.1, delta=0.1):
     # Draw original graph
 
     if G.number_of_edges() > 1000:
@@ -178,7 +275,7 @@ def dks_pipeline(G, d, k, eps=0.1, delta=0.1):
 
     # Solve for densest subgraph
     with benchmark("computing spannogram"):
-        metric, supp = spannogram_Dks_eps_psd(k, Vd, eps=eps, delta=delta)
+        metric, supp = spannogram(k, Vd, eps=eps, delta=delta)
     print('metric', metric)
 
     # Select nodes from result
@@ -199,6 +296,11 @@ def dks_pipeline(G, d, k, eps=0.1, delta=0.1):
     return selected
 
 
+dks_pipeline = functools.partial(_dks_pipeline, spannogram_Dks_eps_psd)
+parallel_dks_pipeline = functools.partial(_dks_pipeline,
+                                          parallel_spannogram_Dks_eps_psd)
+
+
 def test():
     answer = 'bcdeh'
     G = build_simple_test_graph()
@@ -217,8 +319,8 @@ def test_wdc_sample():
 
 
 def test_wdc_subsampled():
-    G = wdc.create_graph("pld-index-1m.dat", "pld-arc-1m.dat")
-    dks_pipeline(G, d=2, k=200)
+    G = wdc.create_graph("pld-index-10k.dat", "pld-arc-10k.dat")
+    parallel_dks_pipeline(G, d=2, k=100)
 
 
 if __name__ == '__main__':
