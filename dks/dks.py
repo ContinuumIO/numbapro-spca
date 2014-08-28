@@ -4,15 +4,20 @@ from contextlib import contextmanager
 import functools
 import numpy as np
 import scipy
+import matplotlib;
+matplotlib.use('Agg')
+
 import matplotlib.pyplot as plt
 import networkx as nx
 from timeit import default_timer as timer
+
+from numbapro import cuda
+from numbapro.cudalib.sorting.segsort import segmented_sort
 
 import wdc_dataset as wdc
 import progress
 
 float_dtype = np.dtype(np.float32)
-
 
 @contextmanager
 def benchmark(name):
@@ -133,6 +138,17 @@ def spannogram_Dks_eps_psd(k, V, eps, delta):
     return metric_opt, supp_opt
 
 
+@cuda.jit("void(uint32[:,::1])")
+def init_indices(I):
+    i, j = cuda.grid(2)
+    if i < I.shape[0] and j < I.shape[1]:
+        I[i, j] = j
+
+
+def divup(x, y):
+    return (x + (y - 1)) // y
+
+
 class ParallelSpannogram(object):
     def __init__(self, V, k, threshold):
         self.Vcs = []
@@ -150,13 +166,48 @@ class ParallelSpannogram(object):
             return metric_opt, supp_opt
 
     def flush(self, metric_opt, supp_opt):
+        if not self.Vcs:
+            # Nothing to do
+            return metric_opt, supp_opt
+
         k = self.k
         V = self.V
-        for Vc in self.Vcs:
-            # Do sort
-            indx = np.argsort(Vc, axis=0)
-            # Get last k
-            topk = indx[-k:]
+
+        topk_list = []
+
+        nodect = V.shape[0]
+        numseg = len(self.Vcs)
+        assert nodect
+        assert numseg
+        eachsize = nodect * numseg
+        D = np.zeros(eachsize, dtype=np.float32)
+
+        # Fill buffer for segmented sort
+        for i, Vc in enumerate(self.Vcs):
+            D[i * nodect:(i + 1) * nodect] = Vc[:, 0]
+
+        # Prepare for GPU segmented sort
+        dD = cuda.to_device(D)
+        dI = cuda.device_array((numseg, nodect), dtype=np.uint32)
+
+        blksz = 32
+        init_indices[(divup(dI.shape[0], blksz),
+                      divup(dI.shape[1], blksz)),
+                     (blksz, blksz)](dI)
+
+        if numseg == 1:
+            segments = np.arange(1, dtype=np.int32)
+        else:
+            segments = (np.arange(numseg - 1, dtype=np.int32) + 1) * nodect
+
+        segmented_sort(dD, dI, cuda.to_device(segments))
+
+        for i in range(numseg):
+            topk = dI[i, -k:].copy_to_host()
+            topk_list.append(topk)
+
+        # Reduce
+        for topk in topk_list:
             # Assume A is huge
             metric = np.linalg.norm(V[topk, :]) ** 2
             if metric > metric_opt:
@@ -205,7 +256,7 @@ def parallel_spannogram_Dks_eps_psd(k, V, eps, delta):
     t_process = CumulativeTime("process")
 
     count = int(round(M))
-    parspan = ParallelSpannogram(V=V, k=k, threshold=1000)
+    parspan = ParallelSpannogram(V=V, k=k, threshold=10)
     for i in range(count):
         progress.render_progress(i / count, width=50)
 
@@ -257,7 +308,7 @@ def _dks_pipeline(spannogram, G, d, k, eps=0.1, delta=0.1):
     if G.number_of_edges() > 1000:
         layout = None
     else:
-        plt.figure(0)
+        # plt.figure(0)
         print("creating layout")
         # Note: nx.spring_layout takes a long time for big graphs
         layout = nx.circular_layout(G)
@@ -284,15 +335,15 @@ def _dks_pipeline(spannogram, G, d, k, eps=0.1, delta=0.1):
         Gk = G.subgraph(selected)
 
     # Draw subgraph
-    plt.figure(1)
+    # plt.figure(1)
 
     with benchmark("drawing subgraph"):
         nx.draw_networkx(Gk, pos=layout)
 
     # Render
     with benchmark('rendering'):
-        plt.show()
-
+        # plt.show()
+        plt.savefig("out.png")
     return selected
 
 
@@ -319,8 +370,8 @@ def test_wdc_sample():
 
 
 def test_wdc_subsampled():
-    G = wdc.create_graph("pld-index-10k.dat", "pld-arc-10k.dat")
-    parallel_dks_pipeline(G, d=2, k=100)
+    G = wdc.create_graph("pld-index-1m.dat", "pld-arc-1m.dat")
+    dks_pipeline(G, d=2, k=100)
 
 
 if __name__ == '__main__':
