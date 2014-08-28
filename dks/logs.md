@@ -76,3 +76,86 @@ metric 334.853951623
 --- rendering
 === rendering takes 43.91162431799603s
 ```
+
+
+## with GPU iteration 1, 1 million, 475719 edges
+
+```
+parsing indices
+parsing arcs
+done building graph
+--- getting adjacency matrix
+=== getting adjacency matrix takes 5.680325224000001s
+--- computing sparse SVD
+=== computing sparse SVD takes 0.4968394879999778s
+--- computing spannogram
+16350.809482488976
+V.shape = (475719, 2)
+[==================================================] 100%
+~~~ dot takes 66.26462529500503s
+~~~ process takes 183.7300573470077s
+=== computing spannogram takes 251.91745214500003s
+metric 234.330151282
+--- selecting subgraph
+=== selecting subgraph takes 0.24239574400007768s
+--- drawing subgraph
+=== drawing subgraph takes 0.2091893470000059s
+--- rendering
+=== rendering takes 12.284106608999991s
+```
+
+## with GPU iteration 1, 1 million, 475719 edges
+
+machine: nvidia1; k20; Intel(R) Core(TM) i7-4820K CPU @ 3.70GHz
+
+GPU
+
+```
+parsing indices
+parsing arcs
+done building graph
+--- getting adjacency matrix
+=== getting adjacency matrix takes 4.886149043217301s
+--- computing sparse SVD
+=== computing sparse SVD takes 0.42436322197318077s
+--- computing spannogram
+16350.809482488976
+V.shape = (475719, 2)
+[==================================================] 100%
+~~~ dot takes 29.794953227974474s
+~~~ process takes 47.99520124681294s
+=== computing spannogram takes 79.95194724900648s
+metric 234.498037191
+--- selecting subgraph
+=== selecting subgraph takes 0.2196907983161509s
+--- drawing subgraph
+=== drawing subgraph takes 0.1772930920124054s
+--- rendering
+=== rendering takes 0.37241417821496725s
+```
+
+CPU
+```
+parsing indices
+parsing arcs
+done building graph
+--- getting adjacency matrix
+=== getting adjacency matrix takes 4.9144850466400385s
+--- computing sparse SVD
+=== computing sparse SVD takes 0.4155474817380309s
+--- computing spannogram
+16350.809482488976
+V.shape = (475719, 2)
+[==================================================] 100%
+~~~ dot takes 32.09444721508771s
+~~~ argsort takes 718.0756665794179s
+~~~ norm-scatter-square takes 1.5464341761544347s
+=== computing spannogram takes 754.2260599490255s
+metric 234.364868276
+--- selecting subgraph
+=== selecting subgraph takes 0.21788877993822098s
+--- drawing subgraph
+=== drawing subgraph takes 0.17275578109547496s
+--- rendering
+=== rendering takes 0.35090011497959495s
+```
