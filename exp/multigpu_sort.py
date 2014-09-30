@@ -14,13 +14,13 @@ logger.info("# of GPUs: %s", ngpus)
 np.random.seed(0)
 
 cuda.select_device(0)
-MAX = 700000000 #75000000
+MAX = 75000000
 
 with cuda.gpus[0]:
     stream0 = cuda.stream()
     sorter0 = RadixSort(maxcount=MAX, stream=stream0, dtype=np.float32)
 
-with cuda.gpus[1]:
+with cuda.gpus[2]:
     stream1 = cuda.stream()
     sorter1 = RadixSort(maxcount=MAX, stream=stream1, dtype=np.float32)
 
@@ -75,7 +75,7 @@ def mgpu_schedule(workcls, args, gpus):
 
 
 @jit(nopython=True)
-def mergesort(A, B, C, klimit):
+def mergesort(A, B, C):
     i = j = k = 0
     while i < A.size and j < B.size:
         if A[i] <= B[j]:
@@ -85,31 +85,24 @@ def mergesort(A, B, C, klimit):
             C[k] = B[j]
             j += 1
         k += 1
-        if k >= klimit:
-            return
 
     while i < A.size:
         C[k] = A[i]
         i += 1
         k += 1
-        if k >= klimit:
-            return
 
     while j < B.size:
         C[k] = B[j]
         j += 1
         k += 1
-        if k >= klimit:
-            return
 
 
-
-sig = "void(float32[::1], float32[::1], float32[::1], intp)"
+sig = "void(float32[::1], float32[::1], float32[::1])"
 cmergesort = mergesort.compile(sig)
 
 
 def multi_gpu():
-    gpus = [0, 1]
+    gpus = [0, 2]
 
     results = []
     half = A.size // 2
@@ -124,16 +117,15 @@ def multi_gpu():
 
     output = np.empty(results[0].size + results[1].size,
                       dtype=results[0].dtype)
-    cmergesort(results[0], results[1], output, K)
+    cmergesort(results[0], results[1], output)
     te = timer()
-    logger.info(output[:K])
+    logger.info(output[-K:])
     return te - ts
 
 
 def single_gpu():
     gpus = [0]
     results = []
-    # with cuda.pinned(A):
     ts = timer()
     workers = mgpu_schedule(Work, [(A, sorter0, stream0)], gpus)
     for gpu, worker in zip(schedule(gpus), workers):
@@ -146,7 +138,7 @@ def single_gpu():
 
 
 def main():
-    step = 50000000
+    step = 5000000
     N = step
     while N < MAX * 2:
         logging.info("N = %s", N)
