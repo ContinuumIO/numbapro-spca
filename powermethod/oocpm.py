@@ -10,7 +10,7 @@ import tables
 
 logging.basicConfig(level=logging.INFO)
 
-NDEFAULT = 50
+NDEFAULT = 1000
 
 filters = tables.Filters(complib='blosc', complevel=5)
 
@@ -74,13 +74,33 @@ def read_vector(name):
     return h5file.root.data
 
 
+def chunk(iterable, n=1):
+    it = iter(iterable)
+    while True:
+        buf = []
+        while len(buf) < n:
+            try:
+                v = next(it)
+            except StopIteration:
+                break
+            else:
+                buf.append(v)
+
+        if not buf:
+            raise StopIteration
+
+        yield buf
+
+
 class OocSparseRow(object):
     def __init__(self, data, indices, start, stop):
         self.data = data
         self.dtype = data.dtype
         self.indices = indices
-        self.start = start
-        self.stop = stop
+        self.start = int(start)
+        self.stop = int(stop)
+        assert self.start == start
+        assert self.stop == stop
         self.nnz = stop - start
 
     def __getitem__(self, col):
@@ -96,9 +116,19 @@ class OocSparseRow(object):
         return self.data[offset + self.start]
 
     def iternz(self):
-        for offset, colidx in enumerate(self.indices.iterrows(self.start,
-                                                              self.stop)):
-            yield colidx, self.data[offset + self.start]
+        chunksize = 1000
+        for cols, dats in self.iternz_chunks(chunksize):
+            for icol, idat in zip(cols, dats):
+                yield icol, idat
+
+    def iternz_chunks(self, n=1000):
+        base = self.start
+        it = self.indices.iterrows(self.start, self.stop)
+        for i, cols in enumerate(chunk(it, n=n)):
+            size = len(cols)
+            datbuf = self.data[base: base + size]
+            base += size
+            yield cols, datbuf
 
 
 class OocSparseMat(object):
@@ -137,6 +167,7 @@ def read_matrix():
 
 
 time_chunked_spmv = CumulativeTime("chunked_spmv")
+time_chunked_spmv_calc = CumulativeTime("chunked_spmv_calc")
 
 
 def chunked_spmv(A, x, out):
@@ -146,8 +177,9 @@ def chunked_spmv(A, x, out):
         srow = A[i]
         cum = out.dtype.type(0)
         with time_chunked_spmv.time():
-            for colidx, aval in srow.iternz():
-                cum += aval * x[colidx]
+            for colidx, aval in srow.iternz_chunks(60000):
+                with time_chunked_spmv_calc.time():
+                    cum += np.sum(aval * x[colidx])
             out[i] = cum
     return out
 
@@ -284,8 +316,10 @@ def test():
             maximum_difference = np.max(np.abs(gold - got))
             print(maximum_difference)
 
+    print(time_chunked_spmv_calc)
     print(time_chunked_spmv)
     print(time_poweriteration)
+
 
 if __name__ == '__main__':
     create_matrix()
