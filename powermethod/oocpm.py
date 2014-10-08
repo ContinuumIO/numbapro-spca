@@ -7,6 +7,7 @@ from timeit import default_timer as timer
 import numpy as np
 import scipy.sparse as ss
 import tables
+# from numba import njit
 
 logging.basicConfig(level=logging.INFO)
 
@@ -60,18 +61,6 @@ def create_matrix(n=NDEFAULT):
     print(h5indptr)
 
     h5file.close()
-
-
-def write_vector(name, n=NDEFAULT):
-    h5file = tables.open_file(name, mode="w", title="vector file")
-    h5data = h5file.create_carray('/', 'data', shape=(n,),
-                                  atom=tables.Float32Atom(), filters=filters)
-    return h5file, h5data
-
-
-def read_vector(name):
-    h5file = tables.open_file(name, mode="r")
-    return h5file.root.data
 
 
 def chunk(iterable, n=1):
@@ -168,25 +157,54 @@ def read_matrix():
 
 time_chunked_spmv = CumulativeTime("chunked_spmv")
 time_chunked_spmv_calc = CumulativeTime("chunked_spmv_calc")
+time_chunked_spmv_io_chunk = CumulativeTime("chunked_spmv_io_chunk")
+time_chunked_spmv_io_scatter = CumulativeTime("chunked_spmv_io_scatter")
 
+
+class MatChunkCache(object):
+    def __init__(self, mat):
+        self.mat = mat
+        self.rows = {}
+
+    def getrow(self, row):
+        if row not in self.rows:
+            chunks = list(self.mat[row].iternz_chunks(10000))
+            self.rows[row] = chunks
+
+        return self.rows[row]
+
+chunkcache = None
 
 def chunked_spmv(A, x, out):
+    global chunkcache
+    if chunkcache is None:
+        chunkcache = MatChunkCache(A)
+    else:
+        assert chunkcache.mat is A
+
+    logger = logging.getLogger('chunked_spmv')
     n = len(x)
     assert A.shape[1] == n, (A.shape, n)
     for i in range(n):
-        srow = A[i]
+        # srow = A[i]
         cum = out.dtype.type(0)
         with time_chunked_spmv.time():
-            for colidx, aval in srow.iternz_chunks(60000):
-                with time_chunked_spmv_calc.time():
-                    cum += np.sum(aval * x[colidx])
-            out[i] = cum
+            with time_chunked_spmv_io_chunk.time():
+                # chunks = list(srow.iternz_chunks(10000))
+                chunks = chunkcache.getrow(i)
+
+            with time_chunked_spmv_io_scatter.time():
+                x = x[...]
+                grouped = [(x[colidx], avals) for colidx, avals in chunks]
+            with time_chunked_spmv_calc.time():
+                for scattered, aval in grouped:
+                    cum += np.sum(aval * scattered)
+                out[i] = cum
     return out
 
 
 def vecdot(x, y):
-    assert len(x) == len(y)
-    return sum(x[i] * y[i] for i in range(len(x)))
+    return np.dot(x, y)
 
 
 def vecnorm(x):
@@ -194,22 +212,14 @@ def vecnorm(x):
 
 
 def rayleigh_quotient(A, x):
-    try:
-        _, tmppath = tempfile.mkstemp()
-        tmpfile, temp = write_vector(tmppath)
-        chunked_spmv(A, x, temp)
-        top = vecdot(temp, x)
-        return top / vecdot(x, x)
-    finally:
-        temp.close()
-        tmpfile.close()
-        os.remove(tmppath)
-
+    temp = np.empty_like(x)
+    chunked_spmv(A, x, temp)
+    top = vecdot(temp, x)
+    return top / vecdot(x, x)
 
 def normalize_inplace(x):
     nrm = vecnorm(x)
-    for i in range(len(x)):
-        x[i] /= nrm
+    x /= nrm
     return x
 
 
@@ -218,8 +228,7 @@ def deparallelize_inplace(x, y):
     y must be normalized
     """
     c = vecdot(x, y)
-    for i in range(len(x)):
-        x[i] -= c * y[i]
+    x -= c * y
     return x
 
 
@@ -233,20 +242,6 @@ class Shift(object):
         return x
 
 
-class VecFactory(object):
-    def __init__(self):
-        self.files = []
-
-    def next(self):
-        fobj, vecobj = write_vector("vec{0}.h5".format(len(self.files)))
-        self.files.append(fobj)
-        return vecobj
-
-    def close_all(self):
-        for f in self.files:
-            f.close()
-
-
 class DoubleBuffer(object):
     def __init__(self, first, second):
         self.first = first
@@ -256,16 +251,13 @@ class DoubleBuffer(object):
         self.first, self.second = self.second, self.first
 
 
-vecfac = VecFactory()
-
-
-def powermethod(A, rtol=1e-10, shift=None, maxiter=10):
+def powermethod(A, rtol=1e-10, shift=None, maxiter=20):
     logger = logging.getLogger("powermethod")
     logger.info("start")
 
     depar = Shift() if shift is None else Shift(*shift)
 
-    buffer = DoubleBuffer(vecfac.next(), vecfac.next())
+    buffer = DoubleBuffer(np.empty(A.shape[0]), np.empty(A.shape[0]))
     buffer.first[...] = 1
 
     def iteration(A, x0, x1):
@@ -278,22 +270,23 @@ def powermethod(A, rtol=1e-10, shift=None, maxiter=10):
     x1, s1 = iteration(A, buffer.first, buffer.second)
     buffer.swap()
     logger.info("#%d iteration | eigenvalue %s", niter, s1)
+    niter += 1
 
     # Second iteration
-    niter += 1
     x2, s2 = iteration(A, buffer.first, buffer.second)
     buffer.swap()
     logger.info("#%d iteration | eigenvalue %s", niter, s1)
+    niter += 1
 
     err = abs((s2 - s1) / s2)
 
     while err > rtol and niter < maxiter:
-        logger.info("#%d iteration | eigenvalue %s", niter, s2)
         s1 = s2
         x2, s2 = iteration(A, buffer.first, buffer.second)
         buffer.swap()
         err = abs((s2 - s1) / s2)
         niter += 1
+        logger.info("#%d iteration | eigenvalue %s", niter, s2)
 
     return x2, s2
 
@@ -305,17 +298,20 @@ def test():
     eigs = []
 
     time_poweriteration = CumulativeTime("power iteration")
-    with time_poweriteration.time():
-        for i in range(k):
+
+    for i in range(k):
+        with time_poweriteration.time():
             x, s = powermethod(A, shift=eigs)
-            eigs.append(x)
+        eigs.append(x)
 
-            gold = A.as_sparse_matrix().dot(x)
-            got = s * x
+        gold = A.as_sparse_matrix().dot(x)
+        got = s * x
 
-            maximum_difference = np.max(np.abs(gold - got))
-            print(maximum_difference)
+        maximum_difference = np.max(np.abs(gold - got))
+        print(maximum_difference)
 
+    print(time_chunked_spmv_io_chunk)
+    print(time_chunked_spmv_io_scatter)
     print(time_chunked_spmv_calc)
     print(time_chunked_spmv)
     print(time_poweriteration)
