@@ -9,7 +9,8 @@ import tables
 
 logging.basicConfig(level=logging.INFO)
 
-NDEFAULT = 5000
+# NDEFAULT = 2000
+NDEFAULT = 1000
 
 filters = tables.Filters(complib='blosc', complevel=5)
 
@@ -155,12 +156,6 @@ def read_matrix():
     return mat
 
 
-time_chunked_spmv = CumulativeTime("chunked_spmv")
-time_chunked_spmv_calc = CumulativeTime("chunked_spmv_calc")
-time_chunked_spmv_io_chunk = CumulativeTime("chunked_spmv_io_chunk")
-time_chunked_spmv_io_scatter = CumulativeTime("chunked_spmv_io_scatter")
-
-
 class MatChunkCache(object):
     def __init__(self, mat):
         self.mat = mat
@@ -233,16 +228,39 @@ class CacheSPMV(object):
             return None
 
 
+time_reading_chunks = CumulativeTime("reading_chunks")
+time_scattering = CumulativeTime("scattering")
+time_spmv_calc = CumulativeTime("spmv_calc")
+time_spmv = CumulativeTime("spmv")
+
+
 class PowerMethod(object):
     def __init__(self, A):
         self.A = A
-
         self.logger = logging.getLogger("powermethod")
-        self.logger.info("start")
         self.chunkcache = MatChunkCache(A)
 
 
+
+        # init workers
+        self.logger.info("initialize workers")
+
+        self.workers = [Worker()]
+
+        def schedule_workers():
+            while True:
+                for w in self.workers:
+                    yield w
+
+        for row, worker in zip(range(self.A.shape[0]), schedule_workers()):
+            if (row % int(A.shape[0]/100)) == 0:
+                self.logger.info("reading row %d", row)
+            with time_reading_chunks.time():
+                worker.add(row, self.chunkcache.getrow(row))
+
+
     def repeat(self, shift=None, rtol=1e-20, maxiter=20):
+        self.logger.info("start")
         self.niter = 0
         self.cachespmv = CacheSPMV()
         A = self.A
@@ -287,7 +305,6 @@ class PowerMethod(object):
         return top / vecdot(x, x)
 
     def chunked_spmv(self, A, x, out):
-        chunkcache = self.chunkcache
         cachespmv = self.cachespmv
 
         cached = cachespmv.get(A, x)
@@ -295,24 +312,50 @@ class PowerMethod(object):
             out[:] = cached
             return out
 
-        n = len(x)
-        assert A.shape[1] == n, (A.shape, n)
-        for i in range(n):
-            cum = out.dtype.type(0)
-            with time_chunked_spmv.time():
-                with time_chunked_spmv_io_chunk.time():
-                    chunks = chunkcache.getrow(i)
+        with time_spmv.time():
+            for worker in self.workers:
+                for row, val in worker.run(x).items():
+                    out[row] = val
 
-                with time_chunked_spmv_io_scatter.time():
-                    ax = x[...]
-                    grouped = [(ax[colidx], avals) for colidx, avals in chunks]
-
-                with time_chunked_spmv_calc.time():
-                    for scattered, aval in grouped:
-                        cum += np.sum(aval * scattered)
-                    out[i] = cum
+        # n = len(x)
+        # assert A.shape[1] == n, (A.shape, n)
+        # for i in range(n):
+        #     cum = out.dtype.type(0)
+        #     with time_chunked_spmv.time():
+        #         # with time_chunked_spmv_io_chunk.time():
+        #         #     chunks = chunkcache.getrow(i)
+        #         #
+        #         # with time_chunked_spmv_io_scatter.time():
+        #         #     ax = x[...]
+        #         #     grouped = [(ax[colidx], avals) for colidx, avals in chunks]
+        #         #
+        #         # with time_chunked_spmv_calc.time():
+        #         #     for scattered, aval in grouped:
+        #         #         cum += np.sum(aval * scattered)
+        #         #     out[i] = cum
+        #
 
         cachespmv.set(A, x, out)
+        return out
+
+
+class Worker(object):
+    def __init__(self):
+        self.tasks = []
+
+    def add(self, row, chunks):
+        self.tasks.append((row, chunks))
+
+    def run(self, x):
+        out = {}
+        for row, chunks in self.tasks:
+            c = 0
+            for colidx, avals in chunks:
+                with time_scattering.time():
+                    scattered = x[colidx]
+                with time_spmv_calc.time():
+                    c += np.sum(avals * scattered)
+            out[row] = c
         return out
 
 
@@ -324,23 +367,26 @@ def test():
 
     time_poweriteration = CumulativeTime("power iteration")
 
-    powermethod = PowerMethod(A)
+    with time_poweriteration.time():
+        powermethod = PowerMethod(A)
+
     for i in range(k):
         with time_poweriteration.time():
             x, s = powermethod.repeat(maxiter=20, shift=eigs)
         eigs.append(x)
 
-        if A.shape[0] < 1000:
+        if A.shape[0] <= 1000:
             gold = A.as_sparse_matrix().dot(x)
             got = s * x
 
             diff = np.abs(gold - got)
             print('diff (mean, max)', np.mean(diff), np.max(diff))
 
-    print(time_chunked_spmv_io_chunk)
-    print(time_chunked_spmv_io_scatter)
-    print(time_chunked_spmv_calc)
-    print(time_chunked_spmv)
+    print(time_reading_chunks)
+    print(time_scattering)
+    print(time_spmv_calc)
+    print(time_spmv)
+
     print(time_poweriteration)
 
 
