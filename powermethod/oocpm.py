@@ -9,7 +9,7 @@ import tables
 
 logging.basicConfig(level=logging.INFO)
 
-NDEFAULT = 2500
+NDEFAULT = 5000
 
 filters = tables.Filters(complib='blosc', complevel=5)
 
@@ -174,9 +174,6 @@ class MatChunkCache(object):
         return self.rows[row]
 
 
-chunkcache = None
-
-
 def vecdot(x, y):
     return np.dot(x, y)
 
@@ -240,19 +237,19 @@ class PowerMethod(object):
     def __init__(self, A):
         self.A = A
 
-        self.niter = 0
         self.logger = logging.getLogger("powermethod")
         self.logger.info("start")
-        self.buffer = DoubleBuffer(np.empty(A.shape[0], dtype=np.float32),
-                                   np.empty(A.shape[0], dtype=np.float32))
-        self.buffer.first[...] = 1
-
         self.chunkcache = MatChunkCache(A)
-        self.cachespmv = CacheSPMV()
+
 
     def repeat(self, shift=None, rtol=1e-20, maxiter=20):
+        self.niter = 0
+        self.cachespmv = CacheSPMV()
         A = self.A
-        buffer = self.buffer
+        buffer = DoubleBuffer(np.empty(A.shape[0], dtype=np.float32),
+                              np.empty(A.shape[0], dtype=np.float32))
+        buffer.first[...] = 1
+
         self.depar = Shift() if shift is None else Shift(*shift)
 
         # First iteration
@@ -272,6 +269,8 @@ class PowerMethod(object):
             err = abs((s2 - s1) / s2)
 
         self.logger.info("end")
+
+        del self.cachespmv
         return x2, s2
 
     def iteration(self, A, x0, x1):
@@ -317,10 +316,6 @@ class PowerMethod(object):
         return out
 
 
-def powermethod(A, shift=None):
-    return PowerMethod(A).repeat(maxiter=20, shift=shift)
-
-
 def test():
     A = read_matrix()
     k = 2
@@ -329,9 +324,10 @@ def test():
 
     time_poweriteration = CumulativeTime("power iteration")
 
+    powermethod = PowerMethod(A)
     for i in range(k):
         with time_poweriteration.time():
-            x, s = powermethod(A, shift=eigs)
+            x, s = powermethod.repeat(maxiter=20, shift=eigs)
         eigs.append(x)
 
         if A.shape[0] < 1000:
