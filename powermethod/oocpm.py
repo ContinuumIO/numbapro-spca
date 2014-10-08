@@ -1,6 +1,4 @@
 # Out-of-core SPMV
-import tempfile
-import os
 import logging
 from contextlib import contextmanager
 from timeit import default_timer as timer
@@ -11,7 +9,7 @@ import tables
 
 logging.basicConfig(level=logging.INFO)
 
-NDEFAULT = 1000
+NDEFAULT = 2500
 
 filters = tables.Filters(complib='blosc', complevel=5)
 
@@ -39,7 +37,9 @@ def create_matrix(n=NDEFAULT):
     # Generate random data
     A = ss.rand(n, n, density=0.33, format='csr', random_state=0,
                 dtype=np.float32)
-    A = (A + A.T) / 2
+    # A = A + A.T
+    # A /= 2
+    A = A.dot(A.T)
     # print(A.todense())
 
     # Build containers
@@ -173,34 +173,8 @@ class MatChunkCache(object):
 
         return self.rows[row]
 
+
 chunkcache = None
-
-def chunked_spmv(A, x, out):
-    global chunkcache
-    if chunkcache is None:
-        chunkcache = MatChunkCache(A)
-    else:
-        assert chunkcache.mat is A
-
-    logger = logging.getLogger('chunked_spmv')
-    n = len(x)
-    assert A.shape[1] == n, (A.shape, n)
-    for i in range(n):
-        # srow = A[i]
-        cum = out.dtype.type(0)
-        with time_chunked_spmv.time():
-            with time_chunked_spmv_io_chunk.time():
-                # chunks = list(srow.iternz_chunks(10000))
-                chunks = chunkcache.getrow(i)
-
-            with time_chunked_spmv_io_scatter.time():
-                x = x[...]
-                grouped = [(x[colidx], avals) for colidx, avals in chunks]
-            with time_chunked_spmv_calc.time():
-                for scattered, aval in grouped:
-                    cum += np.sum(aval * scattered)
-                out[i] = cum
-    return out
 
 
 def vecdot(x, y):
@@ -210,12 +184,6 @@ def vecdot(x, y):
 def vecnorm(x):
     return np.sqrt(vecdot(x, x))
 
-
-def rayleigh_quotient(A, x):
-    temp = np.empty_like(x)
-    chunked_spmv(A, x, temp)
-    top = vecdot(temp, x)
-    return top / vecdot(x, x)
 
 def normalize_inplace(x):
     nrm = vecnorm(x)
@@ -251,44 +219,106 @@ class DoubleBuffer(object):
         self.first, self.second = self.second, self.first
 
 
-def powermethod(A, rtol=1e-10, shift=None, maxiter=20):
-    logger = logging.getLogger("powermethod")
-    logger.info("start")
+class CacheSPMV(object):
+    def __init__(self):
+        self.cached = None
 
-    depar = Shift() if shift is None else Shift(*shift)
+    def set(self, A, x, out):
+        self.cached = A, x, out
 
-    buffer = DoubleBuffer(np.empty(A.shape[0]), np.empty(A.shape[0]))
-    buffer.first[...] = 1
+    def get(self, A, x):
+        if self.cached is not None:
+            ca, cx, cout = self.cached
+            if ca is A and cx is x:
+                return cout
 
-    def iteration(A, x0, x1):
-        x1 = normalize_inplace(depar(chunked_spmv(A, x0, x1)))
-        s1 = rayleigh_quotient(A, x1)
+        else:
+            return None
+
+
+class PowerMethod(object):
+    def __init__(self, A):
+        self.A = A
+
+        self.niter = 0
+        self.logger = logging.getLogger("powermethod")
+        self.logger.info("start")
+        self.buffer = DoubleBuffer(np.empty(A.shape[0], dtype=np.float32),
+                                   np.empty(A.shape[0], dtype=np.float32))
+        self.buffer.first[...] = 1
+
+        self.chunkcache = MatChunkCache(A)
+        self.cachespmv = CacheSPMV()
+
+    def repeat(self, shift=None, rtol=1e-20, maxiter=20):
+        A = self.A
+        buffer = self.buffer
+        self.depar = Shift() if shift is None else Shift(*shift)
+
+        # First iteration
+        x1, s1 = self.iteration(A, buffer.first, buffer.second)
+        buffer.swap()
+
+        # Second iteration
+        x2, s2 = self.iteration(A, buffer.first, buffer.second)
+        buffer.swap()
+
+        err = abs((s2 - s1) / s2)
+
+        while err > rtol and self.niter < maxiter:
+            s1 = s2
+            x2, s2 = self.iteration(A, buffer.first, buffer.second)
+            buffer.swap()
+            err = abs((s2 - s1) / s2)
+
+        self.logger.info("end")
+        return x2, s2
+
+    def iteration(self, A, x0, x1):
+        self.niter += 1
+        x1 = normalize_inplace(self.depar(self.chunked_spmv(A, x0, x1)))
+        s1 = self.rayleigh_quotient(A, x1)
+        self.logger.info("#%d iteration | eigenvalue %s", self.niter, s1)
         return x1, s1
 
-    # First iteration
-    niter = 1
-    x1, s1 = iteration(A, buffer.first, buffer.second)
-    buffer.swap()
-    logger.info("#%d iteration | eigenvalue %s", niter, s1)
-    niter += 1
+    def rayleigh_quotient(self, A, x):
+        temp = np.empty_like(x)
+        self.chunked_spmv(A, x, temp)
+        top = vecdot(temp, x)
+        return top / vecdot(x, x)
 
-    # Second iteration
-    x2, s2 = iteration(A, buffer.first, buffer.second)
-    buffer.swap()
-    logger.info("#%d iteration | eigenvalue %s", niter, s1)
-    niter += 1
+    def chunked_spmv(self, A, x, out):
+        chunkcache = self.chunkcache
+        cachespmv = self.cachespmv
 
-    err = abs((s2 - s1) / s2)
+        cached = cachespmv.get(A, x)
+        if cached is not None:
+            out[:] = cached
+            return out
 
-    while err > rtol and niter < maxiter:
-        s1 = s2
-        x2, s2 = iteration(A, buffer.first, buffer.second)
-        buffer.swap()
-        err = abs((s2 - s1) / s2)
-        niter += 1
-        logger.info("#%d iteration | eigenvalue %s", niter, s2)
+        n = len(x)
+        assert A.shape[1] == n, (A.shape, n)
+        for i in range(n):
+            cum = out.dtype.type(0)
+            with time_chunked_spmv.time():
+                with time_chunked_spmv_io_chunk.time():
+                    chunks = chunkcache.getrow(i)
 
-    return x2, s2
+                with time_chunked_spmv_io_scatter.time():
+                    ax = x[...]
+                    grouped = [(ax[colidx], avals) for colidx, avals in chunks]
+
+                with time_chunked_spmv_calc.time():
+                    for scattered, aval in grouped:
+                        cum += np.sum(aval * scattered)
+                    out[i] = cum
+
+        cachespmv.set(A, x, out)
+        return out
+
+
+def powermethod(A, shift=None):
+    return PowerMethod(A).repeat(maxiter=20, shift=shift)
 
 
 def test():
@@ -304,11 +334,12 @@ def test():
             x, s = powermethod(A, shift=eigs)
         eigs.append(x)
 
-        gold = A.as_sparse_matrix().dot(x)
-        got = s * x
+        if A.shape[0] < 1000:
+            gold = A.as_sparse_matrix().dot(x)
+            got = s * x
 
-        maximum_difference = np.max(np.abs(gold - got))
-        print(maximum_difference)
+            diff = np.abs(gold - got)
+            print('diff (mean, max)', np.mean(diff), np.max(diff))
 
     print(time_chunked_spmv_io_chunk)
     print(time_chunked_spmv_io_scatter)
