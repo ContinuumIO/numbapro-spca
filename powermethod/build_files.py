@@ -2,10 +2,9 @@
 Build gzip files for each column
 
 """
-# import zipfile
+import zipfile
 from collections import deque
 import io
-import gzip
 
 index = 'pld-index'
 # index = 'pld-index-1m.dat'
@@ -16,6 +15,8 @@ outfmt = 'data/{0}'
 start = 0
 stop = 42889799 + 1
 # stop = 100
+
+chunksize = 1000
 
 
 class rewind_iterator(object):
@@ -43,9 +44,27 @@ class rewind_iterator(object):
         self._cur = None
 
 
+filecount = 0
+
+
+def save_buffers(bufs, force=False):
+    global filecount
+    if force or len(bufs) > chunksize:
+
+        with zipfile.ZipFile(outfmt.format(filecount), 'w',
+                             compression=zipfile.ZIP_DEFLATED) as zipfobj:
+            for name, data in bufs:
+                zipfobj.writestr(name, data)
+
+        filecount += 1
+        bufs.clear()
+        assert len(bufs) == 0
+
+
 with open(filename) as fin:
     line_iter = iter(rewind_iterator(fin))
     with open(index) as findex:
+        bufs = []
         for indexline in findex:
             domain, node = indexline.split()
             node = int(node)
@@ -55,9 +74,10 @@ with open(filename) as fin:
             elif node > stop:
                 break
 
-            ofile = outfmt.format(node)
+            ofile = str(node)
             print('ofile', ofile)
             ct = 0
+
             with io.BytesIO() as fout:
                 for line in line_iter:
                     a, b = map(int, line.split())
@@ -67,9 +87,11 @@ with open(filename) as fin:
                     elif a > node:
                         line_iter.unread()
                         break
-                fout.flush()
                 if ct > 0:
                     print('ct =', ct)
-                    with gzip.open(ofile, 'wb') as gzfile:
-                        gzfile.write(fout.getvalue())
+                    fout.flush()
+                    bufs.append((ofile, fout.getvalue()))
 
+            save_buffers(bufs)
+
+        save_buffers(bufs, force=True)
