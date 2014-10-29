@@ -286,12 +286,16 @@ class GpuDot(DotBase):
             return dev_acum.copy_to_host() + zeroidxvals
 
 
+class GpuMatrix(ColMatrix, GpuDot):
+    pass
+
+
 if __name__ == '__main__':
     import topranking
 
     logging.basicConfig(level=logging.INFO)
 
-    cm = ColMatrix()
+    cm = GpuMatrix()
     pm = PowerMethod()
 
     try:
