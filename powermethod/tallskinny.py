@@ -10,6 +10,7 @@ import scipy.sparse as ss
 from multiprocessing import Process, Queue
 from numbapro.cudalib.cusparse import Sparse
 from numbapro import cuda
+from utils import CumulativeTime
 
 # node_count = 42889799
 node_count = 42890000
@@ -30,24 +31,6 @@ print('STRATEGY', STRATEGY)
 
 # Number of processes for MT strategy
 NPROC = 2
-
-
-class CumulativeTime(object):
-    def __init__(self, name):
-        self.name = name
-        self.duration = 0
-
-    @contextmanager
-    def time(self):
-        ts = timer()
-        yield
-        te = timer()
-        self.duration += te - ts
-
-    def __repr__(self):
-        return "~~~ {name} takes {duration}s".format(name=self.name,
-                                                     duration=self.duration)
-
 
 bm_spmv = CumulativeTime("SPMV")
 bm_powermethod = CumulativeTime("PowerMethod")

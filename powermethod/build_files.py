@@ -6,17 +6,17 @@ import zipfile
 from collections import deque
 import io
 
-index = 'pld-index'
-# index = 'pld-index-1m.dat'
-filename = 'pld-arc'
-# filename = 'pld-arc-1m.dat'
+# index = 'pld-index'
+# filename = 'pld-arc'
+
+index = 'example_index'
+filename = 'example_arcs'
 outfmt = 'data/{0}'
 
 start = 0
-stop = 42889799 + 1
-# stop = 100
+stop = 105
 
-chunksize = 1000
+chunksize = 20
 
 
 class rewind_iterator(object):

@@ -8,6 +8,7 @@ import numpy as np
 import scipy.sparse as ss
 import scipy.sparse.linalg as sslin
 
+
 def rayleigh_quotient(A, x):
     top = A.dot(x).dot(x)
     return top / x.dot(x)
@@ -62,8 +63,6 @@ def powermethod(A, rtol=1e-20, shift=None):
     return x2, s2
 
 
-
-
 def main():
     # A = np.array([[4, 14, 0], [5, 13, 0], [1, 0, 2]])
 
@@ -75,7 +74,7 @@ def main():
     # A = np.array([[5, -2], [-2, 8]])  # symmetric
 
     N = 100
-    A = np.random.choice(np.array([0,1], dtype=np.float64), size=(N, N))
+    A = np.random.choice(np.array([0, 1], dtype=np.float64), size=(N, N))
     A = (A + A.T) / 2
     print(A)
 
@@ -101,41 +100,41 @@ def main():
         if not np.allclose(A.dot(x), s * x):
             print("{0}-th eign is wrong".format(i + 1))
 
-    #
-    # # First
-    # x, s = powermethod(A)
-    # print('first', x, s)
-    #
-    # eigs = [x]
-    #
-    # xcol = normalize(x.reshape(x.size, 1))
-    # assert np.allclose(A.dot(x), s * x), "1st eig mismatch"
-    #
-    # # Second
-    # x, s = powermethod(A, shift=eigs)
-    # eigs.append(x)
-    # print('second', x, s)
-    #
-    # assert np.allclose(A.dot(x), s * x), "2nd eig mismatch"
-    #
-    # # Third
-    #
-    # x, s = powermethod(A, shift=eigs)
-    # eigs.append(x)
-    # print('third', x, s)
-    #
-    # assert np.allclose(A.dot(x), s * x), "3rd eig mismatch"
+            #
+            # # First
+            # x, s = powermethod(A)
+            # print('first', x, s)
+            #
+            # eigs = [x]
+            #
+            # xcol = normalize(x.reshape(x.size, 1))
+            # assert np.allclose(A.dot(x), s * x), "1st eig mismatch"
+            #
+            # # Second
+            # x, s = powermethod(A, shift=eigs)
+            # eigs.append(x)
+            # print('second', x, s)
+            #
+            # assert np.allclose(A.dot(x), s * x), "2nd eig mismatch"
+            #
+            # # Third
+            #
+            # x, s = powermethod(A, shift=eigs)
+            # eigs.append(x)
+            # print('third', x, s)
+            #
+            # assert np.allclose(A.dot(x), s * x), "3rd eig mismatch"
 
 
-    # p = 0
-    # B = A - x.reshape(x.size, 1).dot(A[p].reshape(x.size, 1).T)
-    # print(B)
-    # x, s = powermethod(B)
-    #
-    # print('second', x, s)
-    #
-    # print(A.dot(x), s * x)
-    # assert np.allclose(A.dot(x), s * x)
+            # p = 0
+            # B = A - x.reshape(x.size, 1).dot(A[p].reshape(x.size, 1).T)
+            # print(B)
+            # x, s = powermethod(B)
+            #
+            # print('second', x, s)
+            #
+            # print(A.dot(x), s * x)
+            # assert np.allclose(A.dot(x), s * x)
 
 
 if __name__ == '__main__':
